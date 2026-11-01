@@ -1,5 +1,7 @@
 # 拾页笔记 GleanNote 服务端
 
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 图片 → Markdown 笔记应用的服务端（仅后端）。技术栈：Go 1.25 + Gin；目标部署形态为单二进制模块化单体，主库 PostgreSQL 16，队列 Redis（BLMOVE 可靠队列），对象存储 MinIO（S3 兼容）。
 
 产品规则以 [PRD](docs/PRD-拾页笔记-GleanNote.md) 为准，技术方案见 [架构文档](docs/ARCHITECTURE.md)，接口契约见 [API 文档](docs/API.md) 与 [OpenAPI](docs/openapi.yaml)，编码与注释规则见 [规范](docs/CONVENTIONS.md)。

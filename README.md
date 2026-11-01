@@ -2,46 +2,20 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-图片 → Markdown 笔记应用的服务端（仅后端）。技术栈：Go 1.25 + Gin；目标部署形态为单二进制模块化单体，主库 PostgreSQL 16，队列 Redis（BLMOVE 可靠队列），对象存储 MinIO（S3 兼容）。
+图片 → Markdown 笔记应用的服务端（仅后端）。技术栈：Go 1.25 + Gin；部署形态为单二进制模块化单体，主库 PostgreSQL 16，队列 Redis（BLMOVE 可靠队列），对象存储 MinIO（S3 兼容）。
 
 产品规则以 [PRD](docs/PRD-拾页笔记-GleanNote.md) 为准，技术方案见 [架构文档](docs/ARCHITECTURE.md)，接口契约见 [API 文档](docs/API.md) 与 [OpenAPI](docs/openapi.yaml)，编码与注释规则见 [规范](docs/CONVENTIONS.md)。
 
-## 交付状态
+## 功能
 
-服务端已按 PRD 与接口契约实现，主要能力如下：
-
-- 配置加载与校验（环境变量）；
-- 三个付费能力的端口：视觉支持 `fake` 与真实 `deepseek`，邮件为开发态 Fake，对象存储已对接本地 MinIO（S3 兼容，启动时自动创建私有桶）；
-- 启动装配、优雅退出、存活/就绪探针；
-- **账号与认证的 10 个端点**（`/auth:sendCode`、`/auth:register`、`/auth:login`、`/auth:refresh`、`/auth:logout`、`/auth:resetPassword`、`/users/me` 的 GET/PATCH/DELETE，以及 `GET /users/me/quota`）；
-- **目录的 9 个端点**（`GET/POST /folders`、`GET/PATCH/DELETE /folders/{folderId}`、`GET /folders/{folderId}/path`、`POST /folders/{folderId}:move`、`:undelete` 与 `:expunge`）；
-- **笔记的 9 个端点**（`GET/POST /notes`、`GET/PATCH/DELETE /notes/{noteId}`、`POST /notes/{noteId}:move`、`:undelete`、`:expunge` 与 `:appendPages`）；
-- **上传、页面与转换任务的 8 个端点**（`POST /uploads`、`POST /uploads/{uploadId}:complete`、`GET /notes/{noteId}/pages`、`GET /notes/{noteId}/pages/{pageId}`、`GET /notes/{noteId}/conversionJob`、`POST /notes/{noteId}/conversionJob:cancel`、`:retry`，以及 `POST /notes:createFromPages`）；
-- **回收站、搜索、标签与同步的 8 个端点**（`GET /trash`、`GET /notes:search`、`GET /sync:changes`、`GET/POST /tags`、`PATCH/DELETE /tags/{tagId}`、`PUT /notes/{noteId}/tags`）；
-- **版本与分享的 8 个端点**（`GET /notes/{noteId}/versions`、`GET /notes/{noteId}/versions/{versionId}`、`POST /notes/{noteId}/versions/{versionId}/restore`、`GET/POST/DELETE /notes/{noteId}/shareLink`，以及无鉴权的 `GET /public/shares/{token}` 与 `GET /s/{token}` 分享页）；
-- **导出与导入的 4 个端点**（`POST/GET /exports`、`POST/GET /imports`）；
-- 进程内转换 Worker（`GN_MODE=all|worker`），启动与优雅关闭时与 HTTP 一并管理；
-- 静态检查、构建与全量单元测试通过；真实 PostgreSQL/Redis 集成测试 15/15 通过（详见 [测试报告](docs/TEST-REPORT.md)）。
-
-认证链路已按契约实现：Ed25519 访问令牌（15 分钟，吊销走 `jti` 黑名单）、刷新令牌轮换与重放检测、Argon2id 口令哈希、验证码 HMAC 摘要与限流、登录连续失败锁定、按 `Idempotency-Key` 回放注册与重置密码。持久化默认使用内存实现（进程重启后数据清空），设置 `GN_REPOSITORY_PROVIDER=postgres` 即切换为 PostgreSQL 并在启动时自动应用内嵌迁移。
-
-目录链路已按契约实现：物化路径 `/{rootId}/...` 支撑面包屑与前缀判重，层级上限 5、同级名称大小写不敏感唯一、改名按修订号乐观锁（412）、移动前做环检测与子树高度校验、软删除按批次记录并在 30 天后到期、恢复仅回放同批次节点（原父级不可用时回落到根级并返回 `restoredToRoot`）。目录列表与详情回填 `noteCount`，移动回填 `movedNoteCount`，删除目录时子树内笔记并入同一批次、恢复目录时按批次恢复笔记。
-
-笔记链路已按契约实现：状态机 `DRAFT → NORMAL → DELETED`，标题上限 100 字符、正文上限 20 万字符（超出返回 `413 NOTE_TOO_LARGE`）；保存按 `revision` 乐观锁，修订号落后时**不返回 412**，而是把当前正文另存为冲突副本（标题追加「（冲突副本 时间）」）并在响应中给出 `conflictCopyId`；列表支持 `state`、`orderBy`、`updatedAfter` 与 AIP-158 键集分页；回收站保留 30 天，恢复时父目录仍在回收站则先恢复目录，已彻底删除则回落到根级并返回 `restoredToRoot`。笔记摘要回填 `pageCount`、`thumbnailUrl`（缩略图为首个页面的 10 分钟预签名地址）与 `tags`（`PUT /notes/{noteId}/tags` 覆盖设置，重命名后同步展示新名称）。
-
-图片链路已按契约实现：上传会话 30 分钟有效，单张 ≤10MB 且仅接受 JPEG/PNG/WebP，单批 1–20 张；`complete` 校验对象存在、字节数与 SHA256，并解码校验尺寸（≤4000 万像素），随后生成 `thumb/` 前缀、长边 320 的缩略图。`createFromPages` 按「额度 → 容量 → 上传有效性 → 单事务写入」校验并创建草稿，页面与任务在同一事务内落库，提交后入队；任务由进程内 Worker 调用已配置的视觉提供者（默认 Fake，可切 `deepseek`）生成 Markdown，成功时写正文、按首个一级标题命名（无则「未命名笔记 + 北京时间」）并把笔记置为 `NORMAL`，失败/取消/超时返还额度。页面原图与缩略图地址为 10 分钟预签名；日额度 50 张按北京时间日界结算，容量 200MB 按原图字节计入，彻底删除笔记时释放并清理对象。
-
-版本链路已按契约实现：转换完成、手动保存、自动保存、冲突副本与版本恢复五个时机各生成一份版本，只记录正文、字数与时间；每篇保留最近 50 个且仅 90 天内有效，列表按时间倒序并支持 AIP-158 分页。恢复只替换正文并生成一份 `source=RESTORE` 的新版本，已过期版本按 `404` 处理；自动保存版本按 5 分钟节流，彻底删除笔记时版本一并清理，且版本不计入 200MB 容量。
-
-分享链路已按契约实现：开启时生成 32 字节 CSPRNG 令牌（Base64URL，43 字符无填充），公开地址为 `{GN_PUBLIC_BASE_URL}/s/{token}`；仅 `NORMAL` 状态可开启（否则 `409 SHARE_NOTE_NOT_READY`），关闭返回 `204` 且链接立即失效，重复开启返回同一地址。匿名 `GET /public/shares/{token}`（JSON）与 `GET /s/{token}`（服务端渲染只读页面）均无需鉴权，各自按 IP 限流 60 次/分钟（超出返回 `429 RATE_LIMITED` 并带 `retryAfterSeconds`），响应统一 `Cache-Control: no-store`；分享页正文按纯文本 `<pre>` 转义输出，不渲染 Markdown/HTML 并由 CSP 禁脚本。链接已关闭、笔记或所属目录已删除时，两个匿名端点统一返回 `410 SHARE_LINK_INACTIVE`。笔记详情回填 `shareEnabled`，删除、恢复与彻底删除时分享链接随之失效。
-
-导出链路已按契约实现：`POST /v1/exports` 校验目标后建任务（已删除笔记按 `404`、草稿返回 `409 NOTE_STATE_INVALID`、目录导出仅支持 `MARKDOWN_ZIP`），当前阶段在请求内同步生成归档并返回 `202`，任务可能已是终态；`MARKDOWN_ZIP` 按文件名规则处理非法字符、空标题回落「未命名笔记」、同目录同名追加 ` (2)`，单篇输出 `<标题>.md` 与 `images/page-NNN.<ext>`，目录导出镜像层级并保留空目录；`PDF` 使用 A4 版式、预定义 CJK 字体与 JPEG 原图嵌入。`GET /v1/exports/{exportId}` 每次重新签发 1 小时有效的下载地址，生成失败的任务只回失败码。
-
-导入链路已按契约实现：`POST /v1/imports` 支持 `PER_IMAGE`（每张一篇）与 `MERGE`（按顺序合并一篇），单次 ≤50 张、合并单篇 ≤20 张且拒绝重复上传；逐项串行调用 `createFromPages`，单项失败不阻断其余项，整体状态按结果落定为 `SUCCEEDED`、`PARTIAL_FAILED` 或 `FAILED`，单项成功表示「草稿已创建且转换任务已提交」。
-
-已提供 PostgreSQL 16 与 Redis 7 适配器：`GN_REPOSITORY_PROVIDER=postgres` 时业务数据落库并在启动时自动应用内嵌迁移，`GN_CACHE_PROVIDER=redis` 时限流、失败守卫、幂等、令牌黑名单与转换队列跨实例共享。两者默认均为 `memory`，供单元测试与离线开发使用。
-
-**本次交付边界**：真实邮件供应商尚未接入，邮件仍为 `fake`（仅用于本地联调）；视觉已支持 `deepseek`（OpenAI Chat Completions 兼容多模态），接入方式见下文「付费能力如何接入」。`docs/API.md` 中的 55 个 `/v1` 业务端点、`GET /s/{token}` 公开分享页与 2 个运维探针均已接入路由。
+- **账号与认证**：邮箱验证码注册/登录、Ed25519 访问令牌与刷新令牌轮换、重置密码、注销账号、额度查询。
+- **目录**：最多 5 层嵌套、面包屑、同级重名校验、改名与移动的乐观锁和环检测、批次软删除与恢复。
+- **笔记**：`DRAFT → NORMAL → DELETED` 状态机、按 `revision` 的乐观锁与冲突副本、键集分页、全文搜索、30 天回收站。
+- **图片与转换**：预签名直传与校验、缩略图生成、`createFromPages` 与追加页面、异步转换任务（取消/重试/失败返还）、Markdown 正文与标题生成。
+- **版本与分享**：五类版本快照、自动保存节流与恢复；分享链接、公开 JSON 端点与 `GET /s/{token}` 只读分享页。
+- **标签与同步**：账号级标签、基于游标的增量同步。
+- **导出与导入**：Markdown ZIP / PDF 导出、按图或合并的批量导入。
+- **运行形态**：单二进制模块化单体，`GN_MODE=api|worker|all` 可拆分 HTTP 与转换 Worker，提供 `/healthz` 与 `/readyz` 探针。
 
 ## 环境要求
 
@@ -374,9 +348,9 @@ curl.exe -s http://127.0.0.1:8080/v1/public/shares/<token>
 
 ## 付费能力如何接入（provider 策略）
 
-多模态识别已接入 DeepSeek（OpenAI Chat Completions 兼容，默认模型 `deepseek-flash`，按调用计费）；邮件仍为 `fake`；对象存储使用自托管的 MinIO（S3 兼容、无调用费用），已真实对接。业务代码只依赖端口接口，供应商实现放在 `internal/infrastructure/<capability>/`，由启动装配按名称选择：
+付费能力通过端口抽象接入：视觉支持 DeepSeek（OpenAI Chat Completions 兼容，默认模型 `deepseek-flash`，按调用计费）；邮件当前仅提供 `fake`；对象存储对接自托管 MinIO（S3 兼容）。业务代码只依赖端口接口，供应商实现放在 `internal/infrastructure/<capability>/`，由启动装配按名称选择：
 
-| 能力 | 端口 | 当前实现 | 说明 |
+| 能力 | 端口 | 可选实现 | 说明 |
 |---|---|---|---|
 | 图片 → Markdown | `port.VisionProvider` | `fake` / `deepseek` | `fake` 为确定性输出；`deepseek` 下载预签名页面图并以 base64 内联调用多模态模型，按阅读顺序还原标题层级、列表、表格、公式与代码块，每页以「## 第 N 页」分段；未填 Key 时仍可离线使用 `fake` |
 | 邮件（验证码） | `port.Mailer` | `fake` | 单行 JSON 写入标准输出，不投递、不计费；默认对邮箱与验证码脱敏，`GN_FAKE_MAIL_REVEAL_CODE=true` 时输出明文供本地联调 |
@@ -421,19 +395,24 @@ curl.exe -s -i http://127.0.0.1:8080/readyz
 
 `GN_FAKE_VISION_LATENCY=2s` 用于联调「转换中」状态与超时行为。
 
-## 测试与质量检查
+## 测试
 
-```powershell
+```bash
 gofmt -l cmd internal
 go vet ./...
-go test ./... -count=1
-go test ./... -count=1 -coverprofile=cover.out
 go build ./...
+go test ./... -count=1
 ```
 
-`gofmt -l cmd internal` 无输出表示格式合规。真实 PostgreSQL 16 + Redis 7 的集成结果与各包覆盖率见 [TEST-REPORT.md](docs/TEST-REPORT.md)；MinIO 端到端与真实 DeepSeek 识图的性能指标属历史基线，合并前需按测试报告第 5 节重跑。
+集成测试需要真实 PostgreSQL 16 与 Redis 7，通过环境变量开启；未设置时对应用例自动跳过：
 
-测试覆盖：Fake 视觉的确定性输出与故障映射、探针的 200/503 分支、生产环境 Fake 守卫；认证部分覆盖验证码校验、注册幂等重放与同键异体冲突、登录失败锁定与 429、令牌缺失/非法/过期、资料更新、刷新令牌轮换与重放检测、重置密码后旧凭证失效、注销账号（含目录与笔记清理）；目录部分覆盖路径规则与子树边界、同级重名、分页令牌作用域、层级上限、修订号冲突、移动的环/深度/重名与路径重写、回收站批次删除与回落根级恢复、noteCount/movedNoteCount 与笔记的批次联动；笔记部分覆盖标题与正文边界、状态机与编辑限制、键集分页与状态过滤、冲突副本、目录移动、回收站删除/恢复/彻底删除与回落根级；图片部分覆盖上传会话有效期与批量口径、完成校验的缺失/字节/摘要/解码分支、缩略图生成与尺寸上限、`createFromPages` 的额度/容量/上传有效性校验顺序、页面顺序与预签名地址、任务取消/重试/失败返还与 Worker 消费、彻底删除释放容量；版本部分覆盖五个生成时机与自动保存节流、倒序分页与过期过滤、恢复替换正文并生成 `RESTORE` 版本；分享部分覆盖开启/重复开启/关闭幂等、草稿拒绝、公开读取的失效判定与删除联动、匿名端点限流；装配部分覆盖 `all` 模式消费队列与 `api` 模式不消费；配置部分覆盖密钥长度与环境的强约束。
+```bash
+GN_TEST_DATABASE_URL="postgres://gleannote:gleannote-dev-secret@127.0.0.1:5432/gleannote?sslmode=disable" \
+GN_TEST_REDIS_URL="redis://127.0.0.1:6379/0" \
+go test -count=1 ./internal/infrastructure/postgres ./internal/infrastructure/redis
+```
+
+验证结果与覆盖率见 [TEST-REPORT.md](docs/TEST-REPORT.md)。
 
 ## 目录结构
 
@@ -465,3 +444,7 @@ docs/                        # PRD、架构、API、OpenAPI、规范
 **Fake 的对象与邮件会保留吗？** 使用 `GN_OBJECT_STORE_PROVIDER=fake` 时对象只存在内存，进程重启即丢失；邮件只写标准输出。默认的 minio 模式下对象持久化在容器卷 `gleannote-minio-data`。
 
 **docker-compose 在哪？** 根目录 `compose.yaml` 已覆盖 API/Worker + PostgreSQL + Redis + MinIO 的本地编排，配置集中在 `.env`（样例 `.env.example`）；见「启动开发服务 → 0. 一键启动」。
+
+## 许可
+
+本项目采用 [Apache License 2.0](LICENSE)。贡献代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。

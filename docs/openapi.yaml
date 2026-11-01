@@ -1,0 +1,1665 @@
+openapi: 3.1.0
+info:
+  title: 拾页笔记（GleanNote）服务端 API
+  version: 1.0.1
+  summary: 纸质页面到可编辑 Markdown 笔记的服务端接口契约
+  description: |
+    本契约是 docs/API.md 的机器可读形态，二者必须同步修订。
+    通用约定（认证、分页、幂等、错误模型、上传协议）见 docs/API.md 第 2 章；
+    架构约束见 docs/ARCHITECTURE.md 第 8 章。
+  contact:
+    name: GleanNote 服务端架构组
+  license:
+    name: Proprietary
+servers:
+  - url: https://api.gleannote.example/v1
+    description: 生产环境（示例域名，以实际部署为准）
+tags:
+  - name: auth
+    description: 注册、登录、令牌与账号
+  - name: folder
+    description: 目录树
+  - name: note
+    description: 笔记
+  - name: upload
+    description: 图片上传会话
+  - name: page
+    description: 页面图片
+  - name: conversion
+    description: AI 转换任务
+  - name: trash
+    description: 回收站
+  - name: tag
+    description: 标签
+  - name: version
+    description: 版本历史
+  - name: share
+    description: 分享链接
+  - name: sync
+    description: 增量同步
+  - name: export
+    description: 导出与导入
+  - name: ops
+    description: 运维探针
+security:
+  - bearerAuth: []
+paths:
+
+  # ---------------------------------------------------------------------------
+  # 账号与认证
+  # ---------------------------------------------------------------------------
+
+  /auth:sendCode:
+    post:
+      tags: [auth]
+      summary: 发送邮箱验证码
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, purpose]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                purpose:
+                  type: string
+                  enum: [REGISTER, RESET_PASSWORD, DELETE_ACCOUNT]
+      responses:
+        '204': { description: 已发送 }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  /auth:register:
+    post:
+      tags: [auth]
+      summary: 注册并登录
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code, password, agreements]
+              properties:
+                email: { type: string, format: email }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+                password: { type: string, minLength: 8, maxLength: 32 }
+                nickname: { type: string, minLength: 1, maxLength: 20 }
+                deviceId: { type: string, maxLength: 128 }
+                agreements:
+                  type: object
+                  required: [userAgreement, privacyPolicy]
+                  properties:
+                    userAgreement: { type: boolean, const: true }
+                    privacyPolicy: { type: boolean, const: true }
+      responses:
+        '201':
+          description: 注册成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  /auth:login:
+    post:
+      tags: [auth]
+      summary: 登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+                deviceId: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  /auth:refresh:
+    post:
+      tags: [auth]
+      summary: 刷新令牌
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+                deviceId: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: 新令牌
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '401': { $ref: '#/components/responses/Problem' }
+
+  /auth:logout:
+    post:
+      tags: [auth]
+      summary: 退出登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+                allDevices: { type: boolean, default: false }
+      responses:
+        '204': { description: 已退出 }
+        '401': { $ref: '#/components/responses/Problem' }
+
+  /auth:resetPassword:
+    post:
+      tags: [auth]
+      summary: 通过验证码重置密码
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code, newPassword]
+              properties:
+                email: { type: string, format: email }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+                newPassword: { type: string, minLength: 8, maxLength: 32 }
+      responses:
+        '204': { description: 已重置 }
+        '400': { $ref: '#/components/responses/Problem' }
+
+  /users/me:
+    get:
+      tags: [auth]
+      summary: 当前用户
+      responses:
+        '200':
+          description: 用户信息
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Problem' }
+    patch:
+      tags: [auth]
+      summary: 修改昵称
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nickname]
+              properties:
+                nickname: { type: string, minLength: 1, maxLength: 20 }
+      responses:
+        '200':
+          description: 更新后的用户
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [auth]
+      summary: 注销账号（不可恢复）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, confirm]
+              properties:
+                code: { type: string, pattern: '^[0-9]{6}$' }
+                confirm: { type: boolean, const: true }
+      responses:
+        '204': { description: 已注销 }
+        '400': { $ref: '#/components/responses/Problem' }
+
+  /users/me/quota:
+    get:
+      tags: [auth]
+      summary: 额度与云端容量
+      responses:
+        '200':
+          description: 额度信息
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Quota' }
+        '401': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 目录
+  # ---------------------------------------------------------------------------
+
+  /folders:
+    get:
+      tags: [folder]
+      summary: 列出子目录
+      parameters:
+        - name: parentId
+          in: query
+          description: 缺省表示根级
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: orderBy
+          in: query
+          schema: { type: string, enum: ['createTime asc', 'name asc'] }
+      responses:
+        '200':
+          description: 目录集合
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FolderList' }
+        '400': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [folder]
+      summary: 新建目录
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                parentId: { type: string, format: uuid }
+                name: { type: string, minLength: 1, maxLength: 50 }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Folder' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /folders/{folderId}:
+    parameters:
+      - $ref: '#/components/parameters/FolderId'
+    get:
+      tags: [folder]
+      summary: 目录详情
+      responses:
+        '200':
+          description: 目录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Folder' }
+        '404': { $ref: '#/components/responses/Problem' }
+    patch:
+      tags: [folder]
+      summary: 重命名目录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, revision]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 50 }
+                revision: { type: integer, format: int32 }
+      responses:
+        '200':
+          description: 更新后的目录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Folder' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '412': { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [folder]
+      summary: 删除目录（整棵子树软删除）
+      responses:
+        '200':
+          description: 删除结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeleteResult' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /folders/{folderId}/path:
+    parameters:
+      - $ref: '#/components/parameters/FolderId'
+    get:
+      tags: [folder]
+      summary: 面包屑路径
+      responses:
+        '200':
+          description: 路径
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FolderPath' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /folders/{folderId}:move:
+    parameters:
+      - $ref: '#/components/parameters/FolderId'
+    post:
+      tags: [folder]
+      summary: 移动目录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetParentId:
+                  type: [string, 'null']
+                  format: uuid
+                  description: null 表示移到根级
+      responses:
+        '200':
+          description: 移动结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FolderMoveResult' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /folders/{folderId}:undelete:
+    parameters:
+      - $ref: '#/components/parameters/FolderId'
+    post:
+      tags: [folder]
+      summary: 从回收站恢复目录
+      responses:
+        '200':
+          description: 恢复后的目录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Folder' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /folders/{folderId}:expunge:
+    parameters:
+      - $ref: '#/components/parameters/FolderId'
+    post:
+      tags: [folder]
+      summary: 彻底删除目录
+      responses:
+        '204': { description: 已彻底删除 }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 笔记
+  # ---------------------------------------------------------------------------
+
+  /notes:
+    get:
+      tags: [note]
+      summary: 目录内笔记列表
+      parameters:
+        - name: folderId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: state
+          in: query
+          schema: { type: string, enum: [DRAFT, NORMAL, DELETED] }
+        - name: updatedAfter
+          in: query
+          schema: { type: string, format: date-time }
+        - name: orderBy
+          in: query
+          schema: { type: string, enum: ['updateTime desc', 'createTime desc', 'title asc'] }
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: 笔记集合
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NoteList' }
+        '400': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [note]
+      summary: 新建空白笔记
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folderId]
+              properties:
+                folderId: { type: string, format: uuid }
+                title: { type: string, maxLength: 100 }
+                content: { type: string, maxLength: 200000 }
+                clientCreatedAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NoteDetail' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /notes:createFromPages:
+    post:
+      tags: [note]
+      summary: 由已上传图片创建草稿并提交转换
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folderId, uploadIds]
+              properties:
+                folderId: { type: string, format: uuid }
+                title: { type: string, maxLength: 100 }
+                uploadIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items: { type: string, format: uuid }
+      responses:
+        '201':
+          description: 草稿与任务
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [note, conversionJob]
+                properties:
+                  note: { $ref: '#/components/schemas/NoteSummary' }
+                  conversionJob: { $ref: '#/components/schemas/ConversionJob' }
+                  quota: { $ref: '#/components/schemas/Quota' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  /notes:search:
+    get:
+      tags: [note]
+      summary: 全文搜索（P1）
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: folderId
+          in: query
+          description: 含全部子目录
+          schema: { type: string, format: uuid }
+        - name: tagIds
+          in: query
+          description: 可重复，语义为同时包含
+          schema: { type: array, items: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: 搜索结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResultList' }
+        '400': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [note]
+      summary: 笔记详情
+      responses:
+        '200':
+          description: 笔记
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NoteDetail' }
+        '404': { $ref: '#/components/responses/Problem' }
+    patch:
+      tags: [note]
+      summary: 保存标题或正文（乐观锁）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision]
+              properties:
+                title: { type: string, maxLength: 100 }
+                content: { type: string, maxLength: 200000 }
+                revision: { type: integer, format: int32 }
+                saveSource: { type: string, enum: [MANUAL_SAVE, AUTO_SAVE] }
+      responses:
+        '200':
+          description: 更新结果（可能含冲突副本）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [note]
+                properties:
+                  note: { $ref: '#/components/schemas/NoteDetail' }
+                  conflictCopyId: { type: string, format: uuid }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [note]
+      summary: 删除笔记到回收站
+      responses:
+        '200':
+          description: 删除结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeleteResult' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}:move:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags: [note]
+      summary: 移动笔记
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folderId]
+              properties:
+                folderId: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 移动后的笔记
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NoteSummary' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}:undelete:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags: [note]
+      summary: 从回收站恢复笔记
+      responses:
+        '200':
+          description: 恢复后的笔记
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NoteDetail' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}:expunge:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags: [note]
+      summary: 彻底删除笔记
+      responses:
+        '204': { description: 已彻底删除 }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}:appendPages:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags: [note]
+      summary: 追加页面并提交追加转换（P1）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uploadIds]
+              properties:
+                uploadIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items: { type: string, format: uuid }
+      responses:
+        '202':
+          description: 已提交
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversionJob: { $ref: '#/components/schemas/ConversionJob' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 上传与页面
+  # ---------------------------------------------------------------------------
+
+  /uploads:
+    post:
+      tags: [upload]
+      summary: 申请上传会话与预签名地址
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: object
+                    required: [fileName, contentType, bytes, sha256]
+                    properties:
+                      fileName: { type: string, maxLength: 255 }
+                      contentType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+                      bytes: { type: integer, minimum: 1, maximum: 10485760 }
+                      sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+      responses:
+        '201':
+          description: 上传会话
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/UploadSession' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  /uploads/{uploadId}:complete:
+    parameters:
+      - name: uploadId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [upload]
+      summary: 确认上传并生成缩略图
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sha256]
+              properties:
+                sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+      responses:
+        '200':
+          description: 校验通过
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadedPage' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}/pages:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [page]
+      summary: 页面图片列表
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: 页面集合
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Page' }
+                  nextPageToken: { type: string }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}/pages/{pageId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+      - name: pageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [page]
+      summary: 单页原图地址
+      responses:
+        '200':
+          description: 原图地址
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PageOriginal' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 转换任务
+  # ---------------------------------------------------------------------------
+
+  /notes/{noteId}/conversionJob:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [conversion]
+      summary: 最近一次转换任务
+      responses:
+        '200':
+          description: 任务
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConversionJob' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}/conversionJob:cancel:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags: [conversion]
+      summary: 取消转换任务
+      responses:
+        '200':
+          description: 已取消的任务
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConversionJob' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}/conversionJob:retry:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      tags: [conversion]
+      summary: 重试转换（复用已上传图片）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: 新任务
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConversionJob' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 回收站
+  # ---------------------------------------------------------------------------
+
+  /trash:
+    get:
+      tags: [trash]
+      summary: 回收站列表（批次聚合）
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: 回收站条目
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/TrashEntry' }
+                  nextPageToken: { type: string }
+
+  # ---------------------------------------------------------------------------
+  # 标签
+  # ---------------------------------------------------------------------------
+
+  /tags:
+    get:
+      tags: [tag]
+      summary: 标签列表（P1）
+      parameters:
+        - name: orderBy
+          in: query
+          schema: { type: string, enum: ['noteCount desc', 'name asc'] }
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: 标签集合
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Tag' }
+                  nextPageToken: { type: string }
+    post:
+      tags: [tag]
+      summary: 新建标签（P1）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 20 }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tag' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /tags/{tagId}:
+    parameters:
+      - name: tagId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [tag]
+      summary: 重命名标签（P1）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 20 }
+      responses:
+        '200':
+          description: 更新后的标签
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tag' }
+        '409': { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [tag]
+      summary: 删除标签（P1）
+      responses:
+        '204': { description: 已删除 }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}/tags:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    put:
+      tags: [tag]
+      summary: 覆盖设置笔记标签（P1）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tagIds]
+              properties:
+                tagIds:
+                  type: array
+                  maxItems: 10
+                  items: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 更新后的标签列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Tag' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 版本
+  # ---------------------------------------------------------------------------
+
+  /notes/{noteId}/versions:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [version]
+      summary: 版本列表（P1）
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: 版本集合
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Version' }
+                  nextPageToken: { type: string }
+
+  /notes/{noteId}/versions/{versionId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+      - name: versionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [version]
+      summary: 版本正文（P1）
+      responses:
+        '200':
+          description: 版本详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VersionDetail' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /notes/{noteId}/versions/{versionId}:restore:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+      - name: versionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [version]
+      summary: 恢复版本（P1）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 恢复后的笔记
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NoteDetail' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 分享
+  # ---------------------------------------------------------------------------
+
+  /notes/{noteId}/shareLink:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      tags: [share]
+      summary: 查询分享状态（P1）
+      responses:
+        '200':
+          description: 分享状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareLink' }
+        '404': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [share]
+      summary: 开启分享（P1）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: 已开启
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareLink' }
+        '409': { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [share]
+      summary: 关闭分享（P1）
+      responses:
+        '204': { description: 已关闭 }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  # 公开分享页 GET /s/{token} 返回 text/html（不在 /v1 之下），契约见 docs/API.md 5.9
+  /public/shares/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema: { type: string, minLength: 32, maxLength: 64 }
+    get:
+      tags: [share]
+      summary: 公开读取被分享笔记（P1，无鉴权）
+      security: []
+      responses:
+        '200':
+          description: 只读内容
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicShare' }
+        '410': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 增量同步
+  # ---------------------------------------------------------------------------
+
+  /sync:changes:
+    get:
+      tags: [sync]
+      summary: 增量同步
+      parameters:
+        - name: since
+          in: query
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, format: int32, minimum: 1, maximum: 500, default: 200 }
+        - name: resourceTypes
+          in: query
+          schema:
+            type: array
+            items: { type: string, enum: [FOLDER, NOTE, TAG, PAGE] }
+      responses:
+        '200':
+          description: 变更集
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncResponse' }
+        '410': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 导出与导入
+  # ---------------------------------------------------------------------------
+
+  /exports:
+    post:
+      tags: [export]
+      summary: 发起导出任务（P1）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [format]
+              properties:
+                noteId: { type: string, format: uuid }
+                folderId: { type: string, format: uuid }
+                format: { type: string, enum: [MARKDOWN_ZIP, PDF] }
+      responses:
+        '202':
+          description: 已受理
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Export' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /exports/{exportId}:
+    parameters:
+      - name: exportId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [export]
+      summary: 查询导出结果（P1）
+      responses:
+        '200':
+          description: 导出状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Export' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /imports:
+    post:
+      tags: [export]
+      summary: 发起批量导入任务（P1）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folderId, mode, uploadIds]
+              properties:
+                folderId: { type: string, format: uuid }
+                mode: { type: string, enum: [PER_IMAGE, MERGE] }
+                uploadIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items: { type: string, format: uuid }
+      responses:
+        '202':
+          description: 已受理
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Import' }
+        '409': { $ref: '#/components/responses/Problem' }
+
+  /imports/{importId}:
+    parameters:
+      - name: importId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [export]
+      summary: 查询导入进度（P1）
+      responses:
+        '200':
+          description: 导入状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Import' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  # ---------------------------------------------------------------------------
+  # 运维探针
+  # ---------------------------------------------------------------------------
+
+  /healthz:
+    get:
+      tags: [ops]
+      summary: 存活探针
+      security: []
+      responses:
+        '200':
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+
+  /readyz:
+    get:
+      tags: [ops]
+      summary: 就绪探针
+      description: 逐项检查已装配的付费能力；503 响应与 200 响应同构，不使用 Problem 结构。
+      security: []
+      responses:
+        '200':
+          description: 依赖就绪
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReadyStatus' }
+        '503':
+          description: 依赖异常
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReadyStatus' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access Token，15 分钟有效，EdDSA 签名
+
+  parameters:
+    NoteId:
+      name: noteId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    FolderId:
+      name: folderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, format: int32, minimum: 1, maximum: 100, default: 20 }
+    PageToken:
+      name: pageToken
+      in: query
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 创建类操作必带，8–64 位可见 ASCII，24 小时唯一
+      schema: { type: string, minLength: 8, maxLength: 64 }
+
+  responses:
+    Problem:
+      description: 统一错误响应（RFC 9457）
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+
+    ReadyStatus:
+      type: object
+      required: [status, env, checks]
+      properties:
+        status: { type: string, enum: [ok, unavailable] }
+        env: { type: string, enum: [dev, staging, prod] }
+        checks:
+          type: object
+          description: 键为能力名；值为 ok 或归一错误原因
+          required: [vision, mailer, objectStore]
+          additionalProperties: { type: string }
+          properties:
+            vision: { type: string }
+            mailer: { type: string }
+            objectStore: { type: string }
+
+    Problem:
+      type: object
+      required: [type, title, status, code, userMessage, retryable, requestId]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string, pattern: '^[A-Z][A-Z0-9_]+[A-Z0-9]$' }
+        userMessage: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+        retryable: { type: boolean }
+        retryAfterSeconds: { type: integer }
+        requestId: { type: string }
+
+    User:
+      type: object
+      required: [id, email, nickname, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        nickname: { type: string }
+        emailVerified: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AuthSession:
+      type: object
+      required: [user, accessToken, refreshToken, expiresIn, tokenType]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Access Token 有效秒数 }
+        tokenType: { type: string, const: Bearer }
+
+    Quota:
+      type: object
+      required: [quotaDate, dailyLimit, remaining, resetAt, storage]
+      properties:
+        quotaDate: { type: string, format: date, description: 北京时间日期 }
+        dailyLimit: { type: integer }
+        remaining: { type: integer }
+        resetAt: { type: string, format: date-time, description: 次日 0 点对应的 UTC 时刻 }
+        conversionRunning: { type: boolean }
+        storage:
+          type: object
+          required: [usedBytes, limitBytes, usedPercent]
+          properties:
+            usedBytes: { type: integer, format: int64 }
+            limitBytes: { type: integer, format: int64 }
+            usedPercent: { type: integer, minimum: 0, maximum: 100 }
+
+    Folder:
+      type: object
+      required: [id, name, depth, revision, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        parentId: { type: [string, 'null'], format: uuid }
+        name: { type: string }
+        depth: { type: integer, minimum: 1, maximum: 5 }
+        revision: { type: integer, format: int32 }
+        childCount: { type: integer }
+        noteCount: { type: integer }
+        restoredToRoot: { type: boolean, description: 仅恢复接口可能返回 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    FolderList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Folder' }
+        nextPageToken: { type: string }
+        totalSize: { type: integer }
+
+    FolderPath:
+      type: object
+      required: [items, displayPath]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+        displayPath: { type: string }
+
+    FolderMoveResult:
+      type: object
+      required: [folder]
+      properties:
+        folder: { $ref: '#/components/schemas/Folder' }
+        movedFolderCount: { type: integer }
+        movedNoteCount: { type: integer }
+
+    DeleteResult:
+      type: object
+      required: [deleteBatchId, purgeAt]
+      properties:
+        deleteBatchId: { type: string, format: uuid }
+        folderCount: { type: integer }
+        noteCount: { type: integer }
+        purgeAt: { type: string, format: date-time }
+
+    Tag:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        noteCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    NoteSummary:
+      type: object
+      required: [id, folderId, title, state, revision, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        folderId: { type: string, format: uuid }
+        folderPath: { type: string }
+        title: { type: string }
+        state: { type: string, enum: [DRAFT, NORMAL, DELETED] }
+        revision: { type: integer, format: int32 }
+        charCount: { type: integer }
+        pageCount: { type: integer }
+        thumbnailUrl: { type: string, format: uri }
+        tags:
+          type: array
+          items: { $ref: '#/components/schemas/Tag' }
+        isConflictCopy: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    NoteDetail:
+      allOf:
+        - $ref: '#/components/schemas/NoteSummary'
+        - type: object
+          required: [content]
+          properties:
+            content: { type: string, maxLength: 200000 }
+            shareEnabled: { type: boolean }
+
+    NoteList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/NoteSummary' }
+        nextPageToken: { type: string }
+        totalSize: { type: integer }
+
+    SearchResultList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              noteId: { type: string, format: uuid }
+              title: { type: string }
+              snippet: { type: string }
+              folderPath: { type: string }
+              updatedAt: { type: string, format: date-time }
+        nextPageToken: { type: string }
+        totalSize: { type: integer }
+
+    UploadSession:
+      type: object
+      required: [uploadId, objectKey, putUrl, headers, expiresAt]
+      properties:
+        uploadId: { type: string, format: uuid }
+        objectKey: { type: string }
+        putUrl: { type: string, format: uri }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        expiresAt: { type: string, format: date-time }
+
+    UploadedPage:
+      type: object
+      required: [uploadId, status, bytes]
+      properties:
+        uploadId: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING, UPLOADED, READY, EXPIRED] }
+        width: { type: integer }
+        height: { type: integer }
+        bytes: { type: integer, format: int64 }
+        thumbUrl: { type: string, format: uri }
+
+    Page:
+      type: object
+      required: [id, index]
+      properties:
+        id: { type: string, format: uuid }
+        index: { type: integer, minimum: 1 }
+        width: { type: integer }
+        height: { type: integer }
+        bytes: { type: integer, format: int64 }
+        thumbUrl: { type: string, format: uri }
+        createdAt: { type: string, format: date-time }
+
+    PageOriginal:
+      type: object
+      required: [id, index, originalUrl, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        index: { type: integer }
+        originalUrl: { type: string, format: uri }
+        expiresAt: { type: string, format: date-time }
+
+    ConversionJob:
+      type: object
+      required: [id, noteId, kind, state, phase, totalPages, processedPages, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        noteId: { type: string, format: uuid }
+        kind: { type: string, enum: [CREATE, APPEND] }
+        state: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELED] }
+        phase: { type: string, enum: [QUEUED, RECOGNIZING, GENERATING, COMPLETED] }
+        totalPages: { type: integer }
+        processedPages: { type: integer }
+        failureCode:
+          type: [string, 'null']
+          enum: [PROVIDER_UNAVAILABLE, IMAGE_UNREADABLE, CONTENT_UNSUPPORTED, TIMEOUT, EMPTY_RESULT, QUOTA_EXCEEDED, STORAGE_EXCEEDED, NOTE_MODIFIED, INTERNAL_ERROR, null]
+        failureUserMessage: { type: [string, 'null'] }
+        quotaCharged: { type: integer }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+
+    TrashEntry:
+      type: object
+      required: [batchId, itemType, itemId, name, deletedAt, purgeAt, remainingDays]
+      properties:
+        batchId: { type: string, format: uuid }
+        itemType: { type: string, enum: [FOLDER, NOTE] }
+        itemId: { type: string, format: uuid }
+        name: { type: string }
+        originalPath: { type: string }
+        folderCount: { type: integer }
+        noteCount: { type: integer }
+        deletedAt: { type: string, format: date-time }
+        purgeAt: { type: string, format: date-time }
+        remainingDays: { type: integer, minimum: 0 }
+
+    Version:
+      type: object
+      required: [versionId, source, charCount, createdAt]
+      properties:
+        versionId: { type: string, format: uuid }
+        source: { type: string, enum: [CONVERSION, MANUAL_SAVE, AUTO_SAVE, CONFLICT_COPY, RESTORE] }
+        charCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+
+    VersionDetail:
+      allOf:
+        - $ref: '#/components/schemas/Version'
+        - type: object
+          required: [content]
+          properties:
+            content: { type: string }
+
+    ShareLink:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        url: { type: string, format: uri }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PublicShare:
+      type: object
+      required: [title, content, updatedAt]
+      properties:
+        title: { type: string }
+        content: { type: string }
+        pages:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              originalUrl: { type: string, format: uri }
+        updatedAt: { type: string, format: date-time }
+
+    SyncResponse:
+      type: object
+      required: [changes, nextCursor, hasMore]
+      properties:
+        changes:
+          type: array
+          items: { $ref: '#/components/schemas/SyncChange' }
+        nextCursor: { type: integer, format: int64 }
+        hasMore: { type: boolean }
+
+    SyncChange:
+      type: object
+      required: [seq, resourceType, resourceId, op]
+      properties:
+        seq: { type: integer, format: int64 }
+        resourceType: { type: string, enum: [FOLDER, NOTE, TAG, PAGE] }
+        resourceId: { type: string, format: uuid }
+        op: { type: string, enum: [CREATE, UPDATE, DELETE] }
+        revision: { type: integer, format: int32 }
+        updatedAt: { type: string, format: date-time }
+        payload:
+          type: [object, 'null']
+          additionalProperties: true
+
+    Export:
+      type: object
+      required: [exportId, state]
+      properties:
+        exportId: { type: string, format: uuid }
+        state: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED] }
+        downloadUrl: { type: string, format: uri }
+        expiresAt: { type: string, format: date-time }
+        failureCode: { type: string }
+
+    Import:
+      type: object
+      required: [importId, state, total]
+      properties:
+        importId: { type: string, format: uuid }
+        state: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, PARTIAL_FAILED, FAILED, CANCELED] }
+        total: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              uploadId: { type: string, format: uuid }
+              noteId: { type: string, format: uuid }
+              state: { type: string }
+              failureCode: { type: string }

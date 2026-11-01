@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# 版本控制忽略清单
+# 说明：本文件只定义「哪些产物不进入版本库」，不承载工程规范；
+#      工程规范见 docs/CONVENTIONS.md，架构约定见 docs/ARCHITECTURE.md。
+# ---------------------------------------------------------------------------
+
+# Go 构建与测试产物
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+/coverage
+coverage.html
+coverage.txt
+
+# 本地配置与密钥（禁止入库，占位样例见 .env.example）
+.env
+.env.*
+!/.env.example
+*.pem
+*.key
+configs/local.yaml
+
+# 运行时数据与本地依赖
+/data/
+/tmp/
+/logs/
+*.log
+*.pid
+.DS_Store
+Thumbs.db
+
+# 编辑器与工具链缓存
+.idea/
+.vscode/
+.trae/
+.gocache/
+.golangci-lint-cache/
+
+# 文档构建产物（源文档仍在 docs/ 下纳入版本控制）
+/docs/_build/

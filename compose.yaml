@@ -1,0 +1,132 @@
+# 拾页笔记本地一键启动编排：API/Worker + PostgreSQL 16 + Redis 7 + MinIO。
+#
+# 用法（在仓库根目录）：
+#   cp .env.example .env        # Windows：Copy-Item .env.example .env
+#   docker compose up -d --build   # Podman：podman compose up -d --build
+#   docker compose logs -f api
+#   docker compose down         # 加 -v 会连同数据卷一起删除
+#
+# 变量说明：
+#   - compose 自动读取同目录 .env，做 ${VAR:-默认值} 替换，密钥无需写进本文件；
+#   - 服务端的 GN_S3_* 凭据由 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD 派生，避免两处不同步；
+#   - 容器内一律连服务名（postgres / redis / minio），不依赖宿主端口映射；
+#   - 服务端监听 0.0.0.0:8080，`.env` 里的 GN_HTTP_ADDR 对本编排不生效。
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gleannote}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置：请在 .env 中给出强随机口令}
+      POSTGRES_DB: ${POSTGRES_DB:-gleannote}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  minio:
+    # 国内可用华为云镜像加速，先拉取并重命名后把 MINIO_IMAGE 指向官方名：
+    #   podman pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z
+    #   podman tag swr...:RELEASE.2025-07-23T15-54-02Z quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z}
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-gleannote}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 未设置：请在 .env 中给出强随机口令}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      # MinIO 运行层自带 curl；--noproxy 避免宿主代理变量把 127.0.0.1 也走代理
+      test: ["CMD", "curl", "--noproxy", "*", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${GN_IMAGE:-gleannote:local}
+    environment:
+      GN_ENV: ${GN_ENV:-dev}
+      GN_MODE: ${GN_MODE:-all}
+      GN_HTTP_ADDR: 0.0.0.0:8080
+      GN_LOG_LEVEL: ${GN_LOG_LEVEL:-info}
+      # 与 Dockerfile 默认值一致，可按容器内存上限覆盖
+      GOMEMLIMIT: ${GOMEMLIMIT:-300MiB}
+      GN_PUBLIC_BASE_URL: ${GN_PUBLIC_BASE_URL:-http://127.0.0.1:8080}
+      GN_HMAC_SECRET: ${GN_HMAC_SECRET:?GN_HMAC_SECRET 未设置：请在 .env 中给出至少 32 字节的密钥}
+      GN_JWT_PRIVATE_KEY: ${GN_JWT_PRIVATE_KEY:-}
+      # 视觉识别：默认 fake（离线）；填 GN_VISION_API_KEY 并把 provider 改为 deepseek 即真实识图
+      GN_VISION_PROVIDER: ${GN_VISION_PROVIDER:-fake}
+      GN_VISION_API_KEY: ${GN_VISION_API_KEY:-}
+      GN_VISION_BASE_URL: ${GN_VISION_BASE_URL:-}
+      GN_VISION_MODEL: ${GN_VISION_MODEL:-}
+      GN_VISION_REQUEST_TIMEOUT: ${GN_VISION_REQUEST_TIMEOUT:-2m}
+      GN_MAILER_PROVIDER: ${GN_MAILER_PROVIDER:-fake}
+      GN_FAKE_MAIL_REVEAL_CODE: ${GN_FAKE_MAIL_REVEAL_CODE:-false}
+      GN_FAKE_VISION_LATENCY: ${GN_FAKE_VISION_LATENCY:-0s}
+      GN_FAKE_VISION_FAILURE: ${GN_FAKE_VISION_FAILURE:-}
+      # 对象存储走真实 MinIO，桶在启动时自动创建且保持私有
+      GN_OBJECT_STORE_PROVIDER: minio
+      GN_S3_ENDPOINT: http://minio:9000
+      GN_S3_BUCKET: ${GN_S3_BUCKET:-gleannote-private}
+      GN_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-gleannote}
+      GN_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 未设置：请在 .env 中给出强随机口令}
+      GN_S3_REGION: ${GN_S3_REGION:-us-east-1}
+      GN_S3_USE_SSL: "false"
+      # 业务数据落 PostgreSQL，限流/幂等/黑名单/队列走 Redis
+      GN_REPOSITORY_PROVIDER: postgres
+      GN_DATABASE_URL: postgres://${POSTGRES_USER:-gleannote}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置：请在 .env 中给出强随机口令}@postgres:5432/${POSTGRES_DB:-gleannote}?sslmode=disable
+      GN_DATABASE_MAX_CONNS: ${GN_DATABASE_MAX_CONNS:-8}
+      GN_CACHE_PROVIDER: redis
+      GN_REDIS_URL: redis://redis:6379/0
+      # 容器内访问依赖走服务名，必须绕开宿主代理变量
+      NO_PROXY: minio,postgres,redis,localhost,127.0.0.1
+      no_proxy: minio,postgres,redis,localhost,127.0.0.1
+    ports:
+      # 默认只监听回环地址，交由前置代理对外暴露；需要局域网直连时显式改绑
+      - "127.0.0.1:${GN_HTTP_PORT:-8080}:8080"
+    # 依赖只保证启动顺序：服务端在依赖未就绪时退出，由 restart 策略自动重试。
+    # 不使用 condition: service_healthy，因为部分 Podman（WSL）环境不运行健康检查定时器。
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    healthcheck:
+      # 运行层是 alpine（busybox wget），显式清空代理变量，避免被宿主代理拦截
+      test: ["CMD-SHELL", "http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

@@ -1,0 +1,12 @@
+# 容器构建只复制 cmd/ 与 internal/，其余目录不参与构建上下文。
+.git
+docs
+deploy
+scripts
+tmp
+data
+logs
+bin
+dist
+*.md
+*.log

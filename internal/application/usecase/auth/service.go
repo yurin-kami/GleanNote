@@ -45,6 +45,11 @@ type Deps struct {
 	CodeLimiter   port.RateLimiter
 	LoginAttempts port.FailureGuard
 	Mailer        port.Mailer
+	/*
+	 * SkipCodeVerification 为 true 时跳过邮箱验证码校验，仅由 bootstrap 在 GN_ENV=dev 下开启。
+	 * 用途：本地联调时任意邮箱可直接注册/重置密码，不必真的收信。
+	 */
+	SkipCodeVerification bool
 }
 
 /* placeholderPassword 只用于生成占位哈希，不参与任何真实账号的校验 */

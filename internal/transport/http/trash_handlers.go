@@ -26,7 +26,7 @@ type trashEntryDTO struct {
 /* trashListDTO 是回收站集合响应；契约未定义 totalSize */
 type trashListDTO struct {
 	Items         []trashEntryDTO `json:"items"`
-	NextPageToken string          `json:"nextPageToken,omitempty"`
+	NextPageToken string          `json:"nextPageToken"`
 }
 
 /* toTrashEntryDTO 映射批次聚合视图；时间统一 UTC + RFC3339 */

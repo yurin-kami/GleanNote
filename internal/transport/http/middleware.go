@@ -36,26 +36,8 @@ const idempotencyTTL = 24 * time.Hour
 /*
  * 限流口径与 docs/ARCHITECTURE.md#87-限流与防滥用 一致。
  * 超限统一返回 429 RATE_LIMITED，并带 Retry-After；键格式 rl:{scope}:{identity}。
+ * 配额与窗口集中在 ratelimits.go，允许按环境覆盖（压测放开限流用）。
  */
-const (
-	globalRateAllowance = 600
-	globalRateWindow    = time.Minute
-	loginRateAllowance  = 10
-	loginRateWindow     = time.Minute
-	writeRateAllowance  = 120
-	writeRateWindow     = time.Minute
-	uploadRateAllowance = 100
-	uploadRateWindow    = time.Hour
-)
-
-/*
- * 公开分享匿名读取限流口径：60 次/分钟/IP。
- * 参考：docs/API.md#59-分享链接
- */
-const (
-	publicShareAllowance = 60
-	publicShareWindow    = time.Minute
-)
 
 /* securityHeaders 为所有响应补充基础安全头；本服务只输出 JSON，不渲染 HTML */
 func securityHeaders() gin.HandlerFunc {
@@ -207,10 +189,10 @@ func tokenError(err error) error {
  * 超限返回 429 并携带建议重试秒数；限流器异常属于内部错误，不静默放行。
  * 参考：docs/API.md#59-分享链接
  */
-func publicShareRateLimit(limiter port.RateLimiter) gin.HandlerFunc {
+func publicShareRateLimit(limiter port.RateLimiter, allowance int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		allowed, wait, err := limiter.Take(c.Request.Context(),
-			"rl:public-share:"+c.ClientIP(), publicShareAllowance, publicShareWindow)
+			"rl:public-share:"+c.ClientIP(), allowance, publicShareRateWindow)
 		if err != nil {
 			respondError(c, errs.New(errs.CodeInternal, "公开分享限流校验失败").WithCause(err))
 			return
@@ -233,21 +215,21 @@ func rateLimitedError(wait time.Duration) error {
  * globalRateLimit 限制单 IP 每分钟请求总数，抵御撞库与资源耗尽。
  * 键基于 c.ClientIP()，因此路由必须禁用代理头信任（见 router.go 的 SetTrustedProxies）。
  */
-func globalRateLimit(limiter port.RateLimiter) gin.HandlerFunc {
+func globalRateLimit(limiter port.RateLimiter, allowance int) gin.HandlerFunc {
 	return rateLimit(limiter, func(c *gin.Context) string {
 		return "rl:global:" + c.ClientIP()
-	}, globalRateAllowance, globalRateWindow, "请求过于频繁")
+	}, allowance, globalRateWindow, "请求过于频繁")
 }
 
 /* loginRateLimit 限制单 IP 登录尝试频率，与账号级失败锁定互补 */
-func loginRateLimit(limiter port.RateLimiter) gin.HandlerFunc {
+func loginRateLimit(limiter port.RateLimiter, allowance int) gin.HandlerFunc {
 	return rateLimit(limiter, func(c *gin.Context) string {
 		return "rl:login:" + c.ClientIP()
-	}, loginRateAllowance, loginRateWindow, "登录尝试过于频繁")
+	}, allowance, loginRateWindow, "登录尝试过于频繁")
 }
 
 /* writeRateLimit 限制单用户写操作频率；读请求不消耗写配额 */
-func writeRateLimit(limiter port.RateLimiter) gin.HandlerFunc {
+func writeRateLimit(limiter port.RateLimiter, allowance int) gin.HandlerFunc {
 	return rateLimit(limiter, func(c *gin.Context) string {
 		if safeMethod(c.Request.Method) {
 			return ""
@@ -257,7 +239,7 @@ func writeRateLimit(limiter port.RateLimiter) gin.HandlerFunc {
 			return ""
 		}
 		return "rl:write:" + claims.UserID
-	}, writeRateAllowance, writeRateWindow, "写操作过于频繁")
+	}, allowance, writeRateWindow, "写操作过于频繁")
 }
 
 /* safeMethod 判断只读方法，限流器据此跳过写配额 */
@@ -266,14 +248,14 @@ func safeMethod(method string) bool {
 }
 
 /* uploadRateLimit 限制单用户每小时上传会话数量 */
-func uploadRateLimit(limiter port.RateLimiter) gin.HandlerFunc {
+func uploadRateLimit(limiter port.RateLimiter, allowance int) gin.HandlerFunc {
 	return rateLimit(limiter, func(c *gin.Context) string {
 		claims, ok := accessClaimsFrom(c)
 		if !ok || claims.UserID == "" {
 			return ""
 		}
 		return "rl:upload:" + claims.UserID
-	}, uploadRateAllowance, uploadRateWindow, "上传请求过于频繁")
+	}, allowance, uploadRateWindow, "上传请求过于频繁")
 }
 
 /*

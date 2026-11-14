@@ -36,6 +36,23 @@ type Config struct {
 	Auth          AuthConfig
 	Database      DatabaseConfig
 	Redis         RedisConfig
+	/* CORSOrigins 是允许跨域访问的来源白名单；为空表示不开启跨域 */
+	CORSOrigins []string
+	/* RateLimits 是限流配额；窗口固定，只有配额可通过 GN_RATE_* 覆盖 */
+	RateLimits RateLimits
+}
+
+/*
+ * RateLimits 是各类限流的配额。
+ * 默认值与 docs/ARCHITECTURE.md#87-限流与防滥用 一致；压测环境可整体放大，
+ * 但窗口保持一分钟/一小时不变，避免"不同口径下的吞吐对比"失真。
+ */
+type RateLimits struct {
+	GlobalPerMinute      int
+	LoginPerMinute       int
+	WritePerMinute       int
+	UploadPerHour        int
+	PublicSharePerMinute int
 }
 
 /*
@@ -154,6 +171,33 @@ func Load() (Config, error) {
 	cfg.Auth.SigningSeed = seed
 
 	/*
+	 * CORS 白名单：逗号分隔的来源列表，支持 "*" 全放行。
+	 * 未配置即关闭跨域，各环境口径一致：需要跨源访问时必须显式声明，
+	 * 避免"默认放行"被带到线上（联调用 GN_CORS_ORIGINS=* 即可）。
+	 */
+	cfg.CORSOrigins = parseOrigins(getEnv("GN_CORS_ORIGINS", ""))
+
+	/* 限流配额：默认即生产口径，压测环境通过 GN_RATE_* 显式放大 */
+	rateKeys := []struct {
+		key      string
+		fallback int
+		target   *int
+	}{
+		{"GN_RATE_GLOBAL_PER_MIN", 600, &cfg.RateLimits.GlobalPerMinute},
+		{"GN_RATE_LOGIN_PER_MIN", 10, &cfg.RateLimits.LoginPerMinute},
+		{"GN_RATE_WRITE_PER_MIN", 120, &cfg.RateLimits.WritePerMinute},
+		{"GN_RATE_UPLOAD_PER_HOUR", 100, &cfg.RateLimits.UploadPerHour},
+		{"GN_RATE_SHARE_PER_MIN", 60, &cfg.RateLimits.PublicSharePerMinute},
+	}
+	for _, item := range rateKeys {
+		value, err := parsePositiveInt(item.key, item.fallback)
+		if err != nil {
+			return Config{}, err
+		}
+		*item.target = value
+	}
+
+	/*
 	 * 时长与布尔类配置单独解析：非法值必须报错，避免被静默忽略。
 	 * 参考：docs/CONVENTIONS.md#31-通用 G-05
 	 */
@@ -195,6 +239,17 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+/*
+ * SkipEmailCodeVerification 表示当前环境允许跳过邮箱验证码校验。
+ *
+ * 只对 dev 返回 true：本地联调可以任意邮箱直接注册/重置密码；
+ * staging 与 prod 恒为 false，避免把联调便利带到线上。
+ * 参考：docs/ARCHITECTURE.md#86-认证与授权
+ */
+func (c Config) SkipEmailCodeVerification() bool {
+	return c.Env == "dev"
 }
 
 /*
@@ -349,6 +404,44 @@ func (c Config) SlogLevel() slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+/*
+ * parseOrigins 解析逗号分隔的跨域来源白名单。
+ * 空白项与重复项被丢弃，保证 "*" 与具体来源可以混写而不产生歧义。
+ */
+func parseOrigins(raw string) []string {
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(parts))
+	origins := make([]string, 0, len(parts))
+	for _, part := range parts {
+		origin := strings.TrimSpace(part)
+		if origin == "" {
+			continue
+		}
+		if _, ok := seen[origin]; ok {
+			continue
+		}
+		seen[origin] = struct{}{}
+		origins = append(origins, origin)
+	}
+	return origins
+}
+
+/*
+ * parsePositiveInt 读取正整数环境变量，未配置时返回兜底值。
+ * 非法或非正值必须启动失败，避免"配置了 0 导致全部请求被限流"的静默故障。
+ */
+func parsePositiveInt(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(getEnv(key, ""))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("解析 %s: %q 必须为正整数", key, raw)
+	}
+	return value, nil
 }
 
 /* getEnv 读取环境变量，空值与纯空白视为未配置 */

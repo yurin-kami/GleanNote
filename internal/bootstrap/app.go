@@ -252,8 +252,16 @@ func New(cfg config.Config, out io.Writer, logger *slog.Logger) (*App, error) {
 		Idempotency:        auth.Idempotency,
 		PublicShareLimiter: cache.PublicLimiter,
 		Limiter:            cache.Limiter,
-		Database:           data.Health,
-		Cache:              cache.Health,
+		CORSOrigins:        cfg.CORSOrigins,
+		RateLimits: httptransport.RateLimits{
+			GlobalPerMinute:      cfg.RateLimits.GlobalPerMinute,
+			LoginPerMinute:       cfg.RateLimits.LoginPerMinute,
+			WritePerMinute:       cfg.RateLimits.WritePerMinute,
+			UploadPerHour:        cfg.RateLimits.UploadPerHour,
+			PublicSharePerMinute: cfg.RateLimits.PublicSharePerMinute,
+		},
+		Database: data.Health,
+		Cache:    cache.Health,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("装配路由: %w", err)
@@ -557,6 +565,8 @@ func newAuthComponents(cfg config.Config, mailer port.Mailer, data *dataLayer,
 		CodeLimiter:   cache.CodeLimiter,
 		LoginAttempts: cache.LoginAttempts,
 		Mailer:        mailer,
+		/* 仅 dev 跳过邮箱验证码：规则集中在 config，staging/prod 恒为 false */
+		SkipCodeVerification: cfg.SkipEmailCodeVerification(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("装配认证用例: %w", err)

@@ -14,8 +14,10 @@ type JobView struct {
 	ProcessedPages     int
 	FailureCode        string
 	FailureUserMessage string
-	QuotaCharged       int
-	CreatedAt          time.Time
-	StartedAt          *time.Time
-	FinishedAt         *time.Time
+	/* UnreadablePages 是本次转换未识别到文字的页码，空表示全部识别成功 */
+	UnreadablePages []int
+	QuotaCharged    int
+	CreatedAt       time.Time
+	StartedAt       *time.Time
+	FinishedAt      *time.Time
 }

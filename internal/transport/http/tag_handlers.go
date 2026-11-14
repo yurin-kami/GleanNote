@@ -20,7 +20,7 @@ type tagViewDTO struct {
 /* tagListDTO 是标签集合响应；契约未定义 totalSize */
 type tagListDTO struct {
 	Items         []tagViewDTO `json:"items"`
-	NextPageToken string       `json:"nextPageToken,omitempty"`
+	NextPageToken string       `json:"nextPageToken"`
 }
 
 /* setNoteTagsDTO 是覆盖设置笔记标签后的响应体 */

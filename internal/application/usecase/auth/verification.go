@@ -56,6 +56,12 @@ func (s *Service) withinCodeTx(ctx context.Context, fn func(ctx context.Context)
 }
 
 /*
+ * skipCodeCheck 表示当前部署跳过验证码校验。
+ * 只有 dev 环境由 bootstrap 打开；staging/prod 恒为 false，行为与原先一致。
+ */
+func (s *Service) skipCodeCheck() bool { return s.deps.SkipCodeVerification }
+
+/*
  * checkCode 只读校验验证码，不消费也不累计错误次数。
  * 用途：在执行 Argon2id 等昂贵计算前快速拒绝非法输入，避免未认证请求放大 CPU 消耗。
  */

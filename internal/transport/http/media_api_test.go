@@ -67,16 +67,17 @@ type pageOriginalBody struct {
 
 /* conversionJobBody 对应 openapi 的 ConversionJob */
 type conversionJobBody struct {
-	ID             string `json:"id"`
-	NoteID         string `json:"noteId"`
-	Kind           string `json:"kind"`
-	State          string `json:"state"`
-	Phase          string `json:"phase"`
-	TotalPages     int    `json:"totalPages"`
-	ProcessedPages int    `json:"processedPages"`
-	FailureCode    string `json:"failureCode"`
-	QuotaCharged   int    `json:"quotaCharged"`
-	CreatedAt      string `json:"createdAt"`
+	ID              string `json:"id"`
+	NoteID          string `json:"noteId"`
+	Kind            string `json:"kind"`
+	State           string `json:"state"`
+	Phase           string `json:"phase"`
+	TotalPages      int    `json:"totalPages"`
+	ProcessedPages  int    `json:"processedPages"`
+	FailureCode     string `json:"failureCode"`
+	UnreadablePages []int  `json:"unreadablePages"`
+	QuotaCharged    int    `json:"quotaCharged"`
+	CreatedAt       string `json:"createdAt"`
 }
 
 /* createFromPagesBody 是创建笔记响应 */
@@ -165,6 +166,69 @@ func TestUploadCompleteFlow(t *testing.T) {
 		fmt.Sprintf(`{"sha256":%q}`, digest([]byte("other"))), bearer(session.AccessToken))
 	if mismatch.status != http.StatusConflict || decodeProblem(t, mismatch).Code != "UPLOAD_HASH_MISMATCH" {
 		t.Fatalf("摘要不符 = %d %q", mismatch.status, string(mismatch.body))
+	}
+}
+
+/* TestUploadPresignReissue 校验断点续传端点、越权隔离与已完成态的前置条件错误 */
+func TestUploadPresignReissue(t *testing.T) {
+	app := newTestApp(t)
+	session := app.registerSession(t, "presign@example.com", "Password1")
+	data := testPNG(t, 12, 9)
+
+	ticket := requestUpload(t, app, session.AccessToken,
+		fmt.Sprintf(`{"items":[{"fileName":"p1.png","contentType":"image/png","bytes":%d,"sha256":%q}]}`,
+			len(data), digest(data)))
+
+	reissued := app.do(t, http.MethodPost, "/v1/uploads/"+ticket.UploadID+":presign", "", bearer(session.AccessToken))
+	if reissued.status != http.StatusOK {
+		t.Fatalf("重新签发状态码 = %d，原文 %q", reissued.status, string(reissued.body))
+	}
+	var body uploadSessionBody
+	if err := jsonUnmarshal(reissued.body, &body); err != nil {
+		t.Fatalf("解析重新签发响应: %v", err)
+	}
+	if body.UploadID != ticket.UploadID || body.ObjectKey != ticket.ObjectKey {
+		t.Fatalf("重新签发会话 = %+v，期望沿用 %+v", body, ticket)
+	}
+	if body.PutURL == "" || body.Headers["Content-Type"] != "image/png" {
+		t.Fatalf("重新签发地址或强制头缺失: %+v", body)
+	}
+	if body.ExpiresAt != ticket.ExpiresAt {
+		t.Fatalf("重新签发到期时间 = %q，期望不延长 %q", body.ExpiresAt, ticket.ExpiresAt)
+	}
+
+	other := app.registerSession(t, "presign-other@example.com", "Password1")
+	denied := app.do(t, http.MethodPost, "/v1/uploads/"+ticket.UploadID+":presign", "", bearer(other.AccessToken))
+	if denied.status != http.StatusNotFound {
+		t.Fatalf("跨账号重新签发 = %d，期望 404", denied.status)
+	}
+
+	if err := app.objects.Put(context.Background(), ticket.ObjectKey, "image/png", data); err != nil {
+		t.Fatalf("写入对象: %v", err)
+	}
+	completed := app.do(t, http.MethodPost, "/v1/uploads/"+ticket.UploadID+":complete",
+		fmt.Sprintf(`{"sha256":%q}`, digest(data)), bearer(session.AccessToken))
+	if completed.status != http.StatusOK {
+		t.Fatalf("完成校验 = %d %q", completed.status, string(completed.body))
+	}
+	after := app.do(t, http.MethodPost, "/v1/uploads/"+ticket.UploadID+":presign", "", bearer(session.AccessToken))
+	if after.status != http.StatusConflict || decodeProblem(t, after).Code != "PRECONDITION_FAILED" {
+		t.Fatalf("已完成会话重新签发 = %d %q", after.status, string(after.body))
+	}
+}
+
+/* TestNotesListAlwaysReturnsNextPageToken 校验末页返回空字符串而不是省略字段 */
+func TestNotesListAlwaysReturnsNextPageToken(t *testing.T) {
+	app := newTestApp(t)
+	session := app.registerSession(t, "pagetoken@example.com", "Password1")
+
+	root := rootFolderID(t, app, session.AccessToken)
+	result := app.do(t, http.MethodGet, "/v1/notes?folderId="+root, "", bearer(session.AccessToken))
+	if result.status != http.StatusOK {
+		t.Fatalf("笔记列表状态码 = %d，原文 %q", result.status, string(result.body))
+	}
+	if !bytes.Contains(result.body, []byte(`"nextPageToken":""`)) {
+		t.Fatalf("末页响应缺少空 nextPageToken: %q", string(result.body))
 	}
 }
 

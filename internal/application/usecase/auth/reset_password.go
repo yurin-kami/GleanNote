@@ -24,8 +24,10 @@ func (s *Service) ResetPassword(ctx context.Context, input ResetPasswordInput) e
 	if err := valueobject.CheckPasswordPolicy(input.NewPassword); err != nil {
 		return err
 	}
-	if err := validateVerificationCode(input.Code); err != nil {
-		return err
+	if !s.skipCodeCheck() {
+		if err := validateVerificationCode(input.Code); err != nil {
+			return err
+		}
 	}
 
 	user, err := s.deps.Users.GetByEmail(ctx, email.String())
@@ -38,8 +40,10 @@ func (s *Service) ResetPassword(ctx context.Context, input ResetPasswordInput) e
 
 	now := s.clock.Now()
 	/* 只读预校验：非法验证码直接拒绝并记录失败次数，不进入 Argon2id 计算 */
-	if err := s.checkCode(ctx, email.String(), entity.PurposeResetPassword, input.Code, now); err != nil {
-		return s.recordCodeFailure(ctx, email.String(), entity.PurposeResetPassword, input.Code, now)
+	if !s.skipCodeCheck() {
+		if err := s.checkCode(ctx, email.String(), entity.PurposeResetPassword, input.Code, now); err != nil {
+			return s.recordCodeFailure(ctx, email.String(), entity.PurposeResetPassword, input.Code, now)
+		}
 	}
 
 	/* Argon2id 属于 CPU 密集计算，放在事务外，避免长时间持有数据库事务 */
@@ -49,8 +53,10 @@ func (s *Service) ResetPassword(ctx context.Context, input ResetPasswordInput) e
 	}
 
 	err = s.withinCodeTx(ctx, func(txCtx context.Context) error {
-		if _, err := s.verifyCode(txCtx, email.String(), entity.PurposeResetPassword, input.Code, now); err != nil {
-			return err
+		if !s.skipCodeCheck() {
+			if _, err := s.verifyCode(txCtx, email.String(), entity.PurposeResetPassword, input.Code, now); err != nil {
+				return err
+			}
 		}
 		if err := user.ChangePassword(passwordHash, now); err != nil {
 			return err

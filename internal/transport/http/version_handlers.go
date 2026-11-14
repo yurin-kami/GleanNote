@@ -27,7 +27,7 @@ type versionDetailDTO struct {
 /* versionListDTO 是 AIP-158 集合响应 */
 type versionListDTO struct {
 	Items         []versionDTO `json:"items"`
-	NextPageToken string       `json:"nextPageToken,omitempty"`
+	NextPageToken string       `json:"nextPageToken"`
 }
 
 /* toVersionDTO 映射版本列表项 */

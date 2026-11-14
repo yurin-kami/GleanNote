@@ -60,6 +60,10 @@ type Deps struct {
 	/* Database 与 Cache 为可选探针，memory 实现不提供时探针不追加对应字段 */
 	Database port.HealthChecker
 	Cache    port.HealthChecker
+	/* CORSOrigins 是允许的跨域来源；空切片表示不开启跨域 */
+	CORSOrigins []string
+	/* RateLimits 是限流配额；零值由 normalize 回填生产默认值 */
+	RateLimits RateLimits
 }
 
 /* readyResponse 是就绪探针的响应体；字段追加属于向后兼容变更 */
@@ -82,6 +86,8 @@ func NewRouter(deps Deps) (http.Handler, error) {
 	if deps.Env == "prod" || deps.Env == "staging" {
 		gin.SetMode(gin.ReleaseMode)
 	}
+	/* 限流配额允许环境覆盖，零值回填默认，避免装配方遗漏导致"永不放行" */
+	limits := deps.RateLimits.normalize()
 	engine := gin.New()
 	/*
 	 * 不信任任何代理头：本服务直接对外监听，X-Forwarded-For 可被任意伪造。
@@ -92,10 +98,12 @@ func NewRouter(deps Deps) (http.Handler, error) {
 	}
 	engine.Use(
 		securityHeaders(),
+		/* CORS 必须排在限流与鉴权之前：预检不得计入限流，也不应要求令牌 */
+		cors(deps.CORSOrigins),
 		requestIDMiddleware(deps.Clock),
 		accessLog(deps.Logger, deps.Clock),
 		recoveryMiddleware(deps.Logger),
-		globalRateLimit(deps.Limiter),
+		globalRateLimit(deps.Limiter, limits.GlobalPerMinute),
 	)
 	engine.GET("/healthz", handleHealth)
 	engine.GET("/readyz", handleReady(deps))
@@ -119,7 +127,7 @@ func NewRouter(deps Deps) (http.Handler, error) {
 	registerAPIRoutes(engine.Group("/v1"), h, deps, guarded)
 
 	/* 公开分享页：对外地址 {base}/s/{token}，服务端渲染只读页面，匿名访问仅按 IP 限流 */
-	engine.GET("/s/:token", publicShareRateLimit(deps.PublicShareLimiter), h.publicSharePage)
+	engine.GET("/s/:token", publicShareRateLimit(deps.PublicShareLimiter, limits.PublicSharePerMinute), h.publicSharePage)
 	return rewriteCustomMethods(engine), nil
 }
 
@@ -171,14 +179,16 @@ func validateDeps(deps Deps) error {
  * 路径是改写后的形式：/auth:sendCode 在路由表中写作 /auth/sendCode。
  */
 func registerAPIRoutes(v1 *gin.RouterGroup, h *handler, deps Deps, guarded gin.HandlerFunc) {
+	/* 配额在此归一，与该函数同作用域使用，避免每条路由各自回填默认值 */
+	limits := deps.RateLimits.normalize()
 	/* 登录态路由统一叠加写限流：只读方法在中间件内部跳过，不消耗写配额 */
 	protected := v1.Group("")
-	protected.Use(guarded, writeRateLimit(deps.Limiter))
+	protected.Use(guarded, writeRateLimit(deps.Limiter, limits.WritePerMinute))
 
 	/* 4.1 账号与认证：登录额外按 IP 限流，发码与注册保持公开 */
 	v1.POST("/auth/sendCode", h.sendCode)
 	v1.POST("/auth/register", idempotent(deps.Idempotency, deps.Clock, deps.Logger, "auth:register"), h.register)
-	v1.POST("/auth/login", loginRateLimit(deps.Limiter), h.login)
+	v1.POST("/auth/login", loginRateLimit(deps.Limiter, limits.LoginPerMinute), h.login)
 	v1.POST("/auth/refresh", h.refresh)
 	protected.POST("/auth/logout", h.logout)
 	v1.POST("/auth/resetPassword", idempotent(deps.Idempotency, deps.Clock, deps.Logger, "auth:resetPassword"), h.resetPassword)
@@ -215,8 +225,10 @@ func registerAPIRoutes(v1 *gin.RouterGroup, h *handler, deps Deps, guarded gin.H
 		idempotent(deps.Idempotency, deps.Clock, deps.Logger, "note:createFromPages"), h.createFromPages)
 
 	/* 4.4 图片上传、页面与转换任务：上传会话额外按小时限流 */
-	protected.POST("/uploads", uploadRateLimit(deps.Limiter), h.createUploads)
+	protected.POST("/uploads", uploadRateLimit(deps.Limiter, limits.UploadPerHour), h.createUploads)
 	protected.POST("/uploads/:uploadId/complete", h.completeUpload)
+	/* 断点续传：进程被杀后凭 uploadId 重新签发 putUrl，不新建会话 */
+	protected.POST("/uploads/:uploadId/presign", h.represignUpload)
 	protected.GET("/notes/:noteId/pages", h.listPages)
 	protected.GET("/notes/:noteId/pages/:pageId", h.getPage)
 	protected.GET("/notes/:noteId/conversionJob", h.getConversionJob)
@@ -248,7 +260,7 @@ func registerAPIRoutes(v1 *gin.RouterGroup, h *handler, deps Deps, guarded gin.H
 	protected.POST("/notes/:noteId/shareLink",
 		idempotent(deps.Idempotency, deps.Clock, deps.Logger, "share:create"), h.enableShare)
 	protected.DELETE("/notes/:noteId/shareLink", h.disableShare)
-	v1.GET("/public/shares/:token", publicShareRateLimit(deps.PublicShareLimiter), h.publicShare)
+	v1.GET("/public/shares/:token", publicShareRateLimit(deps.PublicShareLimiter, limits.PublicSharePerMinute), h.publicShare)
 
 	/* 5.10 增量同步：对外 /v1/sync:changes，路由表写作 /v1/sync/changes */
 	protected.GET("/sync/changes", h.listSyncChanges)

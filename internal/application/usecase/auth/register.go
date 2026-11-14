@@ -36,14 +36,19 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (Session, e
 	if err != nil {
 		return Session{}, err
 	}
-	if err := validateVerificationCode(input.Code); err != nil {
-		return Session{}, err
+	/* dev 跳过验证码校验时连格式都不检查，允许客户端用空串直接注册 */
+	if !s.skipCodeCheck() {
+		if err := validateVerificationCode(input.Code); err != nil {
+			return Session{}, err
+		}
 	}
 
 	now := s.clock.Now()
 	/* 只读预校验：非法验证码直接拒绝并记录失败次数，不进入 Argon2id 计算 */
-	if err := s.checkCode(ctx, email.String(), entity.PurposeRegister, input.Code, now); err != nil {
-		return Session{}, s.recordCodeFailure(ctx, email.String(), entity.PurposeRegister, input.Code, now)
+	if !s.skipCodeCheck() {
+		if err := s.checkCode(ctx, email.String(), entity.PurposeRegister, input.Code, now); err != nil {
+			return Session{}, s.recordCodeFailure(ctx, email.String(), entity.PurposeRegister, input.Code, now)
+		}
 	}
 
 	/* 邮箱已占用时直接拒绝，避免白白消耗一条验证码 */
@@ -61,8 +66,10 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (Session, e
 	var user *entity.User
 	var refreshRaw string
 	err = s.withinCodeTx(ctx, func(txCtx context.Context) error {
-		if _, err := s.verifyCode(txCtx, email.String(), entity.PurposeRegister, input.Code, now); err != nil {
-			return err
+		if !s.skipCodeCheck() {
+			if _, err := s.verifyCode(txCtx, email.String(), entity.PurposeRegister, input.Code, now); err != nil {
+				return err
+			}
 		}
 		userID, err := s.newID("用户")
 		if err != nil {

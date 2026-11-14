@@ -64,8 +64,10 @@ func (s *Service) DeleteAccount(ctx context.Context, input DeleteAccountInput) e
 	if !input.Confirm {
 		return errs.New(errs.CodeValidationFailed, "必须显式确认注销账号")
 	}
-	if err := validateVerificationCode(input.Code); err != nil {
-		return err
+	if !s.skipCodeCheck() {
+		if err := validateVerificationCode(input.Code); err != nil {
+			return err
+		}
 	}
 
 	user, err := s.deps.Users.GetByID(ctx, input.UserID)
@@ -74,8 +76,10 @@ func (s *Service) DeleteAccount(ctx context.Context, input DeleteAccountInput) e
 	}
 	now := s.clock.Now()
 	return s.withinCodeTx(ctx, func(txCtx context.Context) error {
-		if _, err := s.verifyCode(txCtx, user.Email, entity.PurposeDeleteAccount, input.Code, now); err != nil {
-			return err
+		if !s.skipCodeCheck() {
+			if _, err := s.verifyCode(txCtx, user.Email, entity.PurposeDeleteAccount, input.Code, now); err != nil {
+				return err
+			}
 		}
 		if err := s.deps.Account.PurgeForUser(txCtx, user.ID); err != nil {
 			return err

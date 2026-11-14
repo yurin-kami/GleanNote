@@ -254,6 +254,7 @@ Access Token 有效期 15 分钟；过期返回 `401 AUTH_TOKEN_EXPIRED`，客�
 |---|---|---|---|---|---|
 | 31 | `POST /v1/uploads` | 申请上传会话与预签名地址 | 是 | 否 | P0 |
 | 32 | `POST /v1/uploads/{uploadId}:complete` | 确认上传并生成缩略图 | 是 | 否 | P0 |
+| 32a | `POST /v1/uploads/{uploadId}:presign` | 为既有会话重新签发上传地址（断点续传） | 是 | 否 | P0 |
 | 33 | `GET /v1/notes/{noteId}/pages` | 页面图片列表（缩略图） | 是 | 否 | P0 |
 | 34 | `GET /v1/notes/{noteId}/pages/{pageId}` | 单页原图地址 | 是 | 否 | P0 |
 | 35 | `GET /v1/notes/{noteId}/conversionJob` | 最近一次转换任务 | 是 | 否 | P0 |
@@ -331,6 +332,8 @@ Access Token 有效期 15 分钟；过期返回 `401 AUTH_TOKEN_EXPIRED`，客�
 
 副作用：自动创建根级目录「我的笔记」（PRD FR-01）。
 错误：`AUTH_CODE_INVALID`、`AUTH_CODE_EXPIRED`、`AUTH_EMAIL_ALREADY_EXISTS`、`VALIDATION_FAILED`、`RATE_LIMITED`。
+
+> 联调说明：`GN_ENV=dev` 时服务端跳过验证码校验，`code` 可传空串或任意值；`staging`/`prod` 恒为强制校验。
 
 #### 5.1.3 `POST /v1/auth:login`
 
@@ -469,7 +472,7 @@ Access Token 有效期 15 分钟；过期返回 `401 AUTH_TOKEN_EXPIRED`，客�
 
 `POST /v1/folders/{folderId}:undelete` → `200` `Folder`，响应头附 `restoredToRoot`（布尔，以响应体字段 `restoredToRoot` 呈现）。恢复整棵子树，同级重名时名称追加 ` (2)`。
 
-`POST /v1/folders/{folderId}:expunge` → `204`。仅允许对 `DELETED` 状态调用；否则 `409 FAILED_PRECONDITION`。
+`POST /v1/folders/{folderId}:expunge` → `204`。仅允许对 `DELETED` 状态调用；否则 `409 PRECONDITION_FAILED`。
 
 ### 5.3 笔记
 
@@ -677,6 +680,16 @@ Access Token 有效期 15 分钟；过期返回 `401 AUTH_TOKEN_EXPIRED`，客�
 
 `originalUrl` 有效期 10 分钟；客户端不得缓存地址超过有效期，需重新请求。
 
+#### 5.4.5 `POST /v1/uploads/{uploadId}:presign`
+
+为既有上传会话重新签发预签名地址，供客户端进程被杀或网络中断后续传（不用整批重拍）。
+
+- 无请求体；响应 `200`，结构与 5.4.1 的单项 `UploadSession` 一致（`uploadId`、`objectKey` 不变）。
+- 新地址有效期与会话原始到期时间一致，续签**不延长** 30 分钟上传窗口。
+- 错误：`404 UPLOAD_NOT_FOUND`（不存在或不属于当前账号）、`410 UPLOAD_EXPIRED`（会话已超时）、
+  `409 PRECONDITION_FAILED`（会话已 `READY`/`USED`，无需再传）。
+- 完成后仍需调用 `:complete` 才会生成缩略图并进入可用状态。
+
 ### 5.5 转换任务
 
 #### 5.5.1 任务对象
@@ -692,6 +705,7 @@ Access Token 有效期 15 分钟；过期返回 `401 AUTH_TOKEN_EXPIRED`，客�
   "processedPages": 1,
   "failureCode": null,
   "failureUserMessage": null,
+  "unreadablePages": [],
   "quotaCharged": 3,
   "createdAt": "2026-10-28T06:00:00Z",
   "startedAt": "2026-10-28T06:00:02Z",
@@ -701,6 +715,9 @@ Access Token 有效期 15 分钟；过期返回 `401 AUTH_TOKEN_EXPIRED`，客�
 
 `GET /v1/notes/{noteId}/conversionJob` 返回上述对象；从未提交过转换时返回 `404 CONVERSION_NOT_FOUND`。
 轮询建议间隔 2 秒；任务终态后客户端再拉取笔记详情（PRD FR-05）。
+
+`unreadablePages` 是本次转换中「未识别到文字」的页码数组（从 1 开始、去重升序），恒为数组；空数组表示全部识别成功。
+客户端直接按该字段提示用户重拍对应页，无需再解析正文里的「（第 N 页未识别到文字）」占位；正文占位仍保留，作为纯文本场景的兜底。
 
 #### 5.5.2 `POST /v1/notes/{noteId}/conversionJob:cancel`
 
@@ -750,11 +767,12 @@ Access Token 有效期 15 分钟；过期返回 `401 AUTH_TOKEN_EXPIRED`，客�
 
 - `GET /v1/notes/{noteId}/versions` → 集合 `{ versionId, source, charCount, createdAt, expiresAt }`。
 - `GET /v1/notes/{noteId}/versions/{versionId}` → `{ versionId, content, charCount, createdAt }`。
-- `POST /v1/notes/{noteId}/versions/{versionId}:restore` → `200` `NoteDetail`；生成新版本（`source=RESTORE`），不删除历史版本；只替换正文（PRD FR-16）。
+- `POST /v1/notes/{noteId}/versions/{versionId}:restore` → `200` `NoteDetail`；生成新版本（`source=RESTORE`），不删除历史版本；只替换正文（PRD FR-16）。必须携带 `Idempotency-Key`。
 
 ### 5.9 分享（P1）
 
 - `GET /v1/notes/{noteId}/shareLink` → `{ "enabled": true, "url": "https://{host}/s/{token}", "createdAt": "...", "updatedAt": "..." }`；从未开启过分享时返回 `200 { "enabled": false }`（不以 404 区分），只有笔记不存在才返回 `404`。
+- `POST /v1/notes/{noteId}/shareLink` 必须携带 `Idempotency-Key`。
 - `POST /v1/notes/{noteId}/shareLink` → `201` 同上；仅 `state=NORMAL` 可开启，否则 `409 SHARE_NOTE_NOT_READY`。
 - `DELETE /v1/notes/{noteId}/shareLink` → `204`，立即失效。
 - `GET /v1/public/shares/{token}`（无鉴权）→ `200`：
@@ -932,3 +950,4 @@ Access Token 有效期 15 分钟；过期返回 `401 AUTH_TOKEN_EXPIRED`，客�
 |---|---|---|---|
 | v1.0 | 2026-10-28 | 服务端接口组 | 首版基线：55 个 `/v1` 业务端点、错误码目录、PRD 追溯 |
 | v1.1 | 2026-11-01 | 服务端接口组 | 交付口径对齐：补充 `GET /s/{token}` 公开分享页（50a）；`JobFailureCode` 增加 `NOTE_MODIFIED`、`INTERNAL_ERROR`；两个匿名分享端点统一 `Cache-Control: no-store` |
+| v1.2 | 2026-11-14 | 服务端接口组 | 联调收口：新增 `POST /v1/uploads/{uploadId}:presign`（32a，断点续传）；`ConversionJob` 增加 `unreadablePages`；列表响应恒返回 `nextPageToken`；`POST /v1/uploads` 的 `headers` 固定回填 `Content-Type`；统一 `PRECONDITION_FAILED` 口径；补充版本恢复/分享开启的幂等要求与 dev 免验证码说明 |

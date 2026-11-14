@@ -810,7 +810,11 @@ sequenceDiagram
 | `GN_DATABASE_MAX_CONNS` | 否 | `8` | 连接池上限，必须为正整数 |
 | `GN_CACHE_PROVIDER` | 否 | `memory` | 限流/幂等/黑名单/队列实现：`memory`/`redis` |
 | `GN_REDIS_URL` | 是 | — | Redis 连接串（如 `redis://127.0.0.1:6379/0`）；选择 `redis` 时必填 |
-| `GN_S3_ENDPOINT` | 否 | `127.0.0.1:9000` | MinIO / S3 端点，可带 http(s) 协议 |
+| `GN_S3_ENDPOINT` | 否 | `127.0.0.1:9000` | MinIO / S3 端点，可带 http(s) 协议；会原样写进预签名地址，必须是客户端可达地址 |
+| `GN_CORS_ORIGINS` | 否 | 空 | 跨域来源白名单，逗号分隔；空表示不开启跨域，联调可写 `*` |
+| `GN_HTTP_BIND` / `MINIO_BIND` | 否 | `127.0.0.1` | 仅 compose 使用：宿主端口绑定地址；需要异机客户端时显式改 `0.0.0.0` |
+| `GN_HTTP_PROXY` / `GN_HOST_LAN_IP` | 否 | 空 | 仅 compose 使用：容器出站代理与 `NO_PROXY` 的宿主地址；生产直连时可省略 |
+| `GN_RATE_*` | 否 | 见 §8.7 | 限流配额：`GLOBAL_PER_MIN` 600、`LOGIN_PER_MIN` 10、`WRITE_PER_MIN` 120、`UPLOAD_PER_HOUR` 100、`SHARE_PER_MIN` 60；非正整数启动失败 |
 | `GN_S3_BUCKET` | 否 | `gleannote-private` | 私有桶名，启动时校验并自动创建 |
 | `GN_S3_ACCESS_KEY` / `GN_S3_SECRET_KEY` | 是 | — | 仅服务端持有；对象存储使用 minio 时必填 |
 | `GN_S3_REGION` | 否 | `us-east-1` | 区域标识 |
@@ -830,7 +834,7 @@ sequenceDiagram
 | `GN_FAKE_VISION_FAILURE` | 否 | 空 | Fake 故障注入：`unavailable`/`unreadable`/`unsupported` |
 | `GN_LOG_LEVEL` | 否 | `info` | 日志级别 |
 
-说明：`GN_REPOSITORY_PROVIDER`、`GN_DATABASE_*`、`GN_CACHE_PROVIDER`、`GN_REDIS_URL` 已由装配层读取，`memory` 与 `postgres`/`redis` 可独立切换；视觉已接入 `deepseek`（OpenAI 兼容多模态），`GN_JWT_PRIVATE_KEY`、`GN_SMTP_*` 仍属目标配置，真实邮件供应商尚未接入；`GN_S3_*` 已被 MinIO 适配器读取，配置策略见 §8.16。
+说明：`GN_ENV=dev` 时服务端跳过邮箱验证码校验（`Config.SkipEmailCodeVerification`），`staging`/`prod` 恒为强制校验；`GN_REPOSITORY_PROVIDER`、`GN_DATABASE_*`、`GN_CACHE_PROVIDER`、`GN_REDIS_URL` 已由装配层读取，`memory` 与 `postgres`/`redis` 可独立切换；视觉已接入 `deepseek`（OpenAI 兼容多模态），`GN_JWT_PRIVATE_KEY`、`GN_SMTP_*` 仍属目标配置，真实邮件供应商尚未接入；`GN_S3_*` 已被 MinIO 适配器读取，配置策略见 §8.16。
 
 ### 附录 B：审计日志字段（P1）
 

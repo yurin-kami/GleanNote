@@ -80,6 +80,58 @@ func (s *Service) CreateUploads(ctx context.Context, userID string, items []Uplo
 }
 
 /*
+ * PresignUpload 为既有上传会话重新签发预签名地址。
+ *
+ * 场景：客户端进程被杀或网络中断后丢失 putUrl，凭 uploadId 续传，避免整批重拍。
+ * 约束：会话必须属于当前用户且仍在上传窗口内；已 READY/USED 的会话返回前置条件错误。
+ * 新地址的有效期与会话到期时间一致，因此重新签发不会延长上传窗口。
+ * 参考：docs/API.md#545-post-v1uploadsuploadidpresign
+ */
+func (s *Service) PresignUpload(ctx context.Context, userID, uploadID string) (UploadTicket, error) {
+	if err := requireUser(userID); err != nil {
+		return UploadTicket{}, err
+	}
+	now := s.clock.Now()
+	upload, err := s.deps.Uploads.GetByID(ctx, userID, uploadID)
+	if err != nil {
+		return UploadTicket{}, err
+	}
+	/* 终态会话一律拒绝：READY/USED 无需再传，EXPIRED 不能再续 */
+	switch upload.Status {
+	case entity.UploadStatusReady, entity.UploadStatusUsed:
+		return UploadTicket{}, errs.New(errs.CodePreconditionFailed, "上传会话已完成，无需重新签发")
+	case entity.UploadStatusExpired:
+		return UploadTicket{}, errs.New(errs.CodeUploadExpired, "上传会话已超时")
+	}
+	/* 仍在 PENDING/UPLOADED 但已过窗口：落 EXPIRED，后续查询与清理直接按状态识别 */
+	if upload.Expired(now) {
+		upload.MarkExpired()
+		if err := s.deps.Uploads.Update(ctx, upload); err != nil {
+			return UploadTicket{}, err
+		}
+		return UploadTicket{}, errs.New(errs.CodeUploadExpired, "上传会话已超时")
+	}
+
+	/* 剩余 TTL 可能小于标准会话长度：取两者较小值，地址不越过会话到期时间 */
+	ttl := upload.ExpiresAt.Sub(now)
+	if ttl > UploadSessionTTL {
+		ttl = UploadSessionTTL
+	}
+	target, err := s.deps.Objects.PresignPut(ctx, upload.ObjectKey, upload.ContentType, ttl)
+	if err != nil {
+		return UploadTicket{}, errs.New(errs.CodeInternal, "生成上传地址失败").WithCause(err)
+	}
+	/* 契约上对外只暴露会话原始到期时间，客户端据此判断还能续多久 */
+	return UploadTicket{
+		UploadID:  upload.ID,
+		ObjectKey: upload.ObjectKey,
+		PutURL:    target.URL,
+		Headers:   target.Headers,
+		ExpiresAt: upload.ExpiresAt,
+	}, nil
+}
+
+/*
  * CompleteUpload 确认对象已上传并完成校验。
  * 顺序：会话有效期 → 对象存在与字节数 → SHA256 → 解码与像素上限 → 写入缩略图 → 事务落状态。
  * 参考：docs/API.md#542-post-v1uploadsuploadidcomplete、docs/ARCHITECTURE.md#56-页面图片管线

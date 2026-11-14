@@ -54,7 +54,10 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-gleannote}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 未设置：请在 .env 中给出强随机口令}
     ports:
-      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      # 预签名 putUrl/thumbUrl 直接指向该地址，客户端绕开应用直传；
+      # 默认只绑回环（安全默认），需要局域网/公网客户端时在 .env 显式写 MINIO_BIND=0.0.0.0
+      - "${MINIO_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      # 控制台只给本机运维，保持回环绑定
       - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
@@ -76,6 +79,8 @@ services:
       GN_MODE: ${GN_MODE:-all}
       GN_HTTP_ADDR: 0.0.0.0:8080
       GN_LOG_LEVEL: ${GN_LOG_LEVEL:-info}
+      # 跨域白名单；留空表示关闭，联调可写 *
+      GN_CORS_ORIGINS: ${GN_CORS_ORIGINS:-}
       # 与 Dockerfile 默认值一致，可按容器内存上限覆盖
       GOMEMLIMIT: ${GOMEMLIMIT:-300MiB}
       GN_PUBLIC_BASE_URL: ${GN_PUBLIC_BASE_URL:-http://127.0.0.1:8080}
@@ -91,9 +96,11 @@ services:
       GN_FAKE_MAIL_REVEAL_CODE: ${GN_FAKE_MAIL_REVEAL_CODE:-false}
       GN_FAKE_VISION_LATENCY: ${GN_FAKE_VISION_LATENCY:-0s}
       GN_FAKE_VISION_FAILURE: ${GN_FAKE_VISION_FAILURE:-}
-      # 对象存储走真实 MinIO，桶在启动时自动创建且保持私有
+      # 对象存储走真实 MinIO，桶在启动时自动创建且保持私有。
+      # 端点会写进预签名地址交给客户端直传，默认走容器名仅供服务端自用；
+      # 有外部客户端时必须覆盖为客户端可达地址（如 http://192.168.10.4:9000）。
       GN_OBJECT_STORE_PROVIDER: minio
-      GN_S3_ENDPOINT: http://minio:9000
+      GN_S3_ENDPOINT: ${GN_S3_ENDPOINT:-http://minio:9000}
       GN_S3_BUCKET: ${GN_S3_BUCKET:-gleannote-private}
       GN_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-gleannote}
       GN_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 未设置：请在 .env 中给出强随机口令}
@@ -106,11 +113,14 @@ services:
       GN_CACHE_PROVIDER: redis
       GN_REDIS_URL: redis://redis:6379/0
       # 容器内访问依赖走服务名，必须绕开宿主代理变量
-      NO_PROXY: minio,postgres,redis,localhost,127.0.0.1
-      no_proxy: minio,postgres,redis,localhost,127.0.0.1
+      NO_PROXY: minio,postgres,redis,localhost,127.0.0.1,${GN_HOST_LAN_IP:-}
+      no_proxy: minio,postgres,redis,localhost,127.0.0.1,${GN_HOST_LAN_IP:-}
+      # 出站代理：容器无直连外网时经宿主代理转发（本地开发用，生产留空）
+      HTTP_PROXY: ${GN_HTTP_PROXY:-}
+      HTTPS_PROXY: ${GN_HTTP_PROXY:-}
     ports:
-      # 默认只监听回环地址，交由前置代理对外暴露；需要局域网直连时显式改绑
-      - "127.0.0.1:${GN_HTTP_PORT:-8080}:8080"
+      # 默认只绑回环（安全默认）；需要局域网/公网客户端时在 .env 显式写 GN_HTTP_BIND=0.0.0.0
+      - "${GN_HTTP_BIND:-127.0.0.1}:${GN_HTTP_PORT:-8080}:8080"
     # 依赖只保证启动顺序：服务端在依赖未就绪时退出，由 restart 策略自动重试。
     # 不使用 condition: service_healthy，因为部分 Podman（WSL）环境不运行健康检查定时器。
     depends_on:

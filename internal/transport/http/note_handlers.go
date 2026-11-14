@@ -48,7 +48,7 @@ type noteRestoreDTO struct {
 /* noteListDTO 是 AIP-158 集合响应 */
 type noteListDTO struct {
 	Items         []noteSummaryDTO `json:"items"`
-	NextPageToken string           `json:"nextPageToken,omitempty"`
+	NextPageToken string           `json:"nextPageToken"`
 	TotalSize     int              `json:"totalSize"`
 }
 
@@ -318,7 +318,7 @@ type searchItemDTO struct {
 /* searchListDTO 是搜索集合响应，字段与 SearchResultList 对齐 */
 type searchListDTO struct {
 	Items         []searchItemDTO `json:"items"`
-	NextPageToken string          `json:"nextPageToken,omitempty"`
+	NextPageToken string          `json:"nextPageToken"`
 	TotalSize     int             `json:"totalSize"`
 }
 

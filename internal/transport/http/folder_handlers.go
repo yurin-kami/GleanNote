@@ -28,7 +28,7 @@ type folderDTO struct {
 /* folderListDTO 是 AIP-158 集合响应 */
 type folderListDTO struct {
 	Items         []folderDTO `json:"items"`
-	NextPageToken string      `json:"nextPageToken,omitempty"`
+	NextPageToken string      `json:"nextPageToken"`
 	TotalSize     int         `json:"totalSize"`
 }
 

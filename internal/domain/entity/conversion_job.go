@@ -79,12 +79,14 @@ type ConversionJob struct {
 	ProcessedPages     int
 	FailureCode        JobFailureCode
 	FailureUserMessage string
-	QuotaCharged       int
-	Attempt            int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	StartedAt          *time.Time
-	FinishedAt         *time.Time
+	/* UnreadablePages 记录本次转换中「未识别到文字」的页码，元素从 1 开始且唯一 */
+	UnreadablePages []int
+	QuotaCharged    int
+	Attempt         int
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	StartedAt       *time.Time
+	FinishedAt      *time.Time
 }
 
 /* NewConversionJob 创建排队中的任务；attempt 从 1 开始，重试时递增 */

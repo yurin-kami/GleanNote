@@ -3,6 +3,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -297,15 +298,19 @@ func NewConversionJobRepository(db *DB) *ConversionJobRepository {
 /* jobColumns 是读取转换任务的列清单 */
 const jobColumns = `id, note_id, user_id, kind, state, phase, total_pages, processed_pages,
 	failure_code, failure_user_message, quota_charged, attempt, created_at, updated_at,
-	started_at, finished_at`
+	started_at, finished_at, unreadable_pages`
 
 /* Create 插入转换任务；同一账号已有排队/处理中任务时返回状态错误 */
 func (r *ConversionJobRepository) Create(ctx context.Context, job *entity.ConversionJob) error {
-	_, err := r.db.q(ctx).Exec(ctx, `INSERT INTO conversion_jobs (`+jobColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+	pages, err := marshalUnreadable(job.UnreadablePages)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.q(ctx).Exec(ctx, `INSERT INTO conversion_jobs (`+jobColumns+`)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb)`,
 		job.ID, job.NoteID, job.UserID, string(job.Kind), string(job.State), string(job.Phase),
 		job.TotalPages, job.ProcessedPages, string(job.FailureCode), job.FailureUserMessage,
-		job.QuotaCharged, job.Attempt, job.CreatedAt, job.UpdatedAt, job.StartedAt, job.FinishedAt)
+		job.QuotaCharged, job.Attempt, job.CreatedAt, job.UpdatedAt, job.StartedAt, job.FinishedAt, pages)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return errs.New(errs.CodeConversionStateInvalid, "已有进行中的转换任务，请稍后再试")
@@ -351,14 +356,18 @@ func (r *ConversionJobRepository) GetForUpdate(ctx context.Context, userID, jobI
 /* Update 覆盖任务状态机字段；状态或属主不匹配时不写入并返回 false */
 func (r *ConversionJobRepository) Update(ctx context.Context, job *entity.ConversionJob,
 	expected entity.JobState) (bool, error) {
+	pages, err := marshalUnreadable(job.UnreadablePages)
+	if err != nil {
+		return false, err
+	}
 	tag, err := r.db.q(ctx).Exec(ctx, `
 		UPDATE conversion_jobs SET state = $2, phase = $3, processed_pages = $4,
 			failure_code = $5, failure_user_message = $6, quota_charged = $7, attempt = $8,
-			updated_at = $9, started_at = $10, finished_at = $11
+			updated_at = $9, started_at = $10, finished_at = $11, unreadable_pages = $14::jsonb
 		WHERE id = $1 AND user_id = $13 AND state = $12`,
 		job.ID, string(job.State), string(job.Phase), job.ProcessedPages,
 		string(job.FailureCode), job.FailureUserMessage, job.QuotaCharged, job.Attempt,
-		job.UpdatedAt, job.StartedAt, job.FinishedAt, string(expected), job.UserID)
+		job.UpdatedAt, job.StartedAt, job.FinishedAt, string(expected), job.UserID, pages)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return false, errs.New(errs.CodeConversionStateInvalid, "该账号已有进行中的转换任务")
@@ -449,10 +458,15 @@ func (r *ConversionJobRepository) ReleaseRunning(ctx context.Context, now time.T
 func scanJob(row rowScanner) (*entity.ConversionJob, error) {
 	job := &entity.ConversionJob{}
 	var kind, state, phase, failureCode string
+	var unreadable []byte
 	err := row.Scan(&job.ID, &job.NoteID, &job.UserID, &kind, &state, &phase,
 		&job.TotalPages, &job.ProcessedPages, &failureCode, &job.FailureUserMessage,
 		&job.QuotaCharged, &job.Attempt, &job.CreatedAt, &job.UpdatedAt,
-		&job.StartedAt, &job.FinishedAt)
+		&job.StartedAt, &job.FinishedAt, &unreadable)
+	if err != nil {
+		return nil, err
+	}
+	pages, err := unmarshalUnreadable(unreadable)
 	if err != nil {
 		return nil, err
 	}
@@ -460,7 +474,35 @@ func scanJob(row rowScanner) (*entity.ConversionJob, error) {
 	job.State = entity.JobState(state)
 	job.Phase = entity.JobPhase(phase)
 	job.FailureCode = entity.JobFailureCode(failureCode)
+	job.UnreadablePages = pages
 	return job, nil
+}
+
+/*
+ * marshalUnreadable 把页码列表编码为 JSONB 参数。
+ * 空列表写入 "[]" 而不是 NULL，保持「无未识别页」与「字段缺失」不可区分，简化读取端。
+ */
+func marshalUnreadable(pages []int) ([]byte, error) {
+	if len(pages) == 0 {
+		return []byte("[]"), nil
+	}
+	payload, err := json.Marshal(pages)
+	if err != nil {
+		return nil, fmt.Errorf("编码未识别页码: %w", err)
+	}
+	return payload, nil
+}
+
+/* unmarshalUnreadable 把 JSONB 列还原为页码列表；空值返回 nil，调用方无需区分 null 与空数组 */
+func unmarshalUnreadable(raw []byte) ([]int, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var pages []int
+	if err := json.Unmarshal(raw, &pages); err != nil {
+		return nil, fmt.Errorf("解析未识别页码: %w", err)
+	}
+	return pages, nil
 }
 
 /* QuotaLedger 是 port.QuotaLedger 的 PostgreSQL 实现 */

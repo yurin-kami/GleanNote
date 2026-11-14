@@ -4,12 +4,13 @@
 
 | 项目 | 内容 |
 |---|---|
-| 报告日期 | 2026-11-01 |
+| 报告日期 | 2026-11-14 |
+| 性能基线 | 见 [PERF-REPORT.md](PERF-REPORT.md)（放开限流、独立库实测） |
 | 被测对象 | 服务端 `cmd/api` 与本仓库全部包（Go 1.25.2 on Windows） |
 | 真实依赖环境 | WSL2 FedoraLinux-44，Go 1.26.10 linux/amd64；Podman `--network host` |
 | 真实依赖版本 | PostgreSQL **16.15**（`postgres:16-alpine`）、Redis **7.4.12**（`redis:7-alpine`） |
-| 交付范围 | 第一轮：P0（6 组）+ P1（3 组）+ Nit（12 项），含 `0002` 迁移与真实依赖集成测试；第二轮：Important 2 项 + Nit 9 项 + Pre-existing 1 项，含分享页路由与 `GOMEMLIMIT` 收口；第三轮：Nit 3 项（缓存指令、单实例约束说明、报告口径） |
-| 结论 | `gofmt`/`go vet`/`go build` 全部通过；`go test ./...` 全部包通过（329 个测试函数 / 78 个测试文件，0 失败）；真实 PostgreSQL + Redis 集成测试 **15/15 通过**；三轮共 18 项审查意见与 2 项遗留问题已全部闭环 |
+| 交付范围 | 第一轮：P0（6 组）+ P1（3 组）+ Nit（12 项），含 `0002` 迁移与真实依赖集成测试；第二轮：Important 2 项 + Nit 9 项 + Pre-existing 1 项，含分享页路由与 `GOMEMLIMIT` 收口；第三轮：Nit 3 项（缓存指令、单实例约束说明、报告口径）；第四轮：配置 3 项 + 接口 2 项 + 文档口径 4 项，含 `0003` 迁移 |
+| 结论 | `gofmt`/`go vet`/`go build` 全部通过；`go test ./...` 全部包通过（352 个测试函数 / 87 个测试文件，0 失败）；真实 PostgreSQL + Redis 集成测试全部通过；真实服务 E2E 主链路 20/20、扩展 29/29、收口 8/8 全部通过（真实 DeepSeek 识图 + MinIO 预签名直传 + 分享页 + 导出下载） |
 
 本报告只保留最新一次实跑结果，替换修复前的「E2E + 压测」报告。历史数据产生于修复前的代码，认证、限流、事务边界与任务状态机均已变更，因此不再作为交付依据；真实依赖 E2E 与压测需在合并前按第 5 节重跑。
 
@@ -36,6 +37,11 @@
 | 第二轮 Pre-existing 13 | `conversion_jobs` 状态更新补 `AND user_id` 约束（G-08） | `infrastructure/postgres/media.go` |
 | 遗留收口 | 实现 `GET /s/{token}` 服务端渲染分享页；`Dockerfile`/`compose.yaml` 补 `GOMEMLIMIT=300MiB` | `transport/http`、`Dockerfile`、`compose.yaml` |
 | 第三轮 Nit 1–3 | 公开分享 JSON/HTML 与 410 响应加 `Cache-Control: no-store`；`ReleaseRunning`/`RecoverPending` 标注仅单实例启动可调；报告耗时按最近一次实跑刷新 | `share_handlers.go`、`media.go`、`jobs.go` |
+| 第四轮 B 配置 | MinIO 9000 对外发布；`GN_S3_ENDPOINT` 改为客户端可达地址（预签名地址随之可用）；`GN_PUBLIC_BASE_URL` 改为 LAN 地址；新增 `GN_HTTP_BIND`/`MINIO_BIND`/`GN_HTTP_PROXY`/`GN_HOST_LAN_IP` | `compose.yaml`、`.env.example`、`docs/ARCHITECTURE.md` 附录 A |
+| 第四轮 C1 接口 | 新增 `POST /v1/uploads/{uploadId}:presign`：进程被杀后凭 uploadId 续传，续签不延长 30 分钟窗口，终态/越权/过期分别返回 409/404/410 | `usecase/upload/uploads.go`、`transport/http/media_handlers.go`、`transport/http/router.go` |
+| 第四轮 C2 接口 | `ConversionJob` 新增 `unreadablePages`：优先取适配器结构化页码（`VisionResult.UnreadablePages`），缺失时回退正文占位解析；经 `0003` 迁移以 JSONB 落库，任务查询恒返回数组 | `conversion/unreadable.go`、`0003_conversion_unreadable_pages.sql`、`postgres/media.go` |
+| 第四轮 D 文档 | 列表恒返回 `nextPageToken`；上传会话 `headers` 回填 `Content-Type`；OpenAPI 幂等头标记必填；`FAILED_PRECONDITION` 统一为 `PRECONDITION_FAILED` |
+| 第四轮 Nit 收口 | 端口默认只绑回环（`GN_HTTP_BIND`/`MINIO_BIND` 需显式放开）；CORS 默认关闭、联调显式写 `GN_CORS_ORIGINS=*`；`GN_HTTP_PROXY`/`GN_HOST_LAN_IP` 入配置文档；未识别页改为适配器结构化优先、占位解析兜底 | `compose.yaml`、`config.go`、`conversion/unreadable.go`、`.env.example`、`docs/ARCHITECTURE.md` |
 
 ---
 
@@ -47,7 +53,7 @@
 | `go vet ./...` | 通过 |
 | `go build ./...` | 通过 |
 | `go test ./... -count=1 -cover` | **37 个包全部 `ok`，0 失败** |
-| 测试函数 / 测试文件 | **329 / 78** |
+| 测试函数 / 测试文件 | **352 / 87** |
 | 无测试文件的包 | 仅 `cmd/api`（`main`）与 `internal/application/port`（纯接口） |
 
 关键包覆盖率（`go test ./... -cover`）：
@@ -56,7 +62,9 @@
 |---|---|---|
 | `infrastructure/pdfdoc` | 93.3% | 新增：结构/字体/JPEG 过滤/分页/取消 |
 | `infrastructure/mail` | 90.6% | 新增：脱敏、明文开关、写失败、provider 校验 |
-| `transport/http` | 73.7% | 跨账号 404、公开分享页与 429、限流忽略伪造头 |
+| `transport/http` | 74.3% | 跨账号 404、公开分享页与 429、限流忽略伪造头、CORS 预检、续签与末页令牌 |
+| `usecase/upload` | 74.0% | 续签成功/越权/过期/已完成/已失效五条分支 |
+| `usecase/conversion` | 82%+ | 未识别页提取、落库与任务视图 |
 | `application/usecase/{note,folder,conversion,share,export,version}` | 72.5%–83.5% | 冲突副本、级联删除、任务 CAS、停机回退、结算冲突、分享失效 |
 | `infrastructure/memory` | 51.4% | 测试用仓储 |
 | `infrastructure/objectstore` | 14.8% | MinIO 适配器由 E2E 覆盖；Fake 时钟注入 |
@@ -87,6 +95,7 @@ go test -count=1 -v ./internal/infrastructure/postgres ./internal/infrastructure
 | postgres | `TestFolderLockTreeRequiresTransaction` / `TestFolderLockSerializesWriters` | 目录 advisory lock 只在事务内生效；并发改名/移动串行化 |
 | postgres | `TestRefreshTokenRotationSingleWinner` | 刷新令牌原子轮换，并发仅一个请求成功 |
 | postgres | `TestConversionJobUserSerial` | 同一用户同时最多一个运行中任务 |
+| postgres | `TestConversionJobUnreadablePagesRoundTrip` | 未识别页码 JSONB 写入/更新/读回（`0003` 迁移） |
 | postgres | `TestUploadConsumeOnce` | 上传会话 READY→USED 只能消费一次，跨账号消费被拒绝 |
 | postgres | `TestListExpiredPurge` | 到期回收站数据可被清理任务扫描 |
 | postgres | `TestAccountPurgerRemovesAllTables` | 注销账号级联清理全部业务表 |
@@ -116,11 +125,12 @@ go test -count=1 -v ./internal/infrastructure/postgres ./internal/infrastructure
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
-| Windows Go | 1.25.2 | 单测、`go vet`、`gofmt` |
-| WSL Go | 1.26.10 linux/amd64 | 集成测试交叉执行环境 |
-| Podman | rootful，`--network host` | `gn-postgres`、`gn-redis`、`gn-minio` |
-| PostgreSQL | 16.15（Alpine） | 端口 5432，库/用户/口令均为 `gleannote` 本地值 |
-| Redis | 7.4.12 | 端口 6379，`AOF` 关闭（测试用临时键） |
+| Windows Go | 1.25 | 单测、`go vet`、`gofmt` |
+| WSL Fedora 44 | Docker 29.6.2 + Compose v5.3.1 | 运行态编排与真实依赖 |
+| PostgreSQL | 16（`postgres:16-alpine`） | 端口 5432；集成测试使用独立库 `gleannote_test` |
+| Redis | 7（`redis:7-alpine`） | 端口 6379；集成测试使用独立 DB 9，避免与运行态队列互扰 |
+| MinIO | RELEASE.2025-07-23 | 9000 对外发布，预签名直传与下载均走该端口 |
+| 视觉供应商 | DeepSeek（OpenAI 兼容） | 真实调用；容器出站经宿主代理转发 |
 
 集成测试通过环境变量开关：`GN_TEST_DATABASE_URL`、`GN_TEST_REDIS_URL` 未设置时自动 `t.Skip`，因此普通 `go test ./...` 不依赖容器。
 
@@ -128,8 +138,11 @@ go test -count=1 -v ./internal/infrastructure/postgres ./internal/infrastructure
 
 ## 5. 局限与合并前待办
 
-1. 本次交付未重跑真实依赖的 HTTP E2E 与性能压测。历史基线（132 例 E2E）产生于修复前代码，而修复改动了认证链路、限流挂载点、事务边界与任务状态机，旧数据不再适用。合并前需在联调环境重新执行 E2E，并重新采样质量目标（读 p95 ≤ 300ms、写 p95 ≤ 500ms、100 RPS）。
-2. 真实 DeepSeek 识图仅有历史基线（2 页 24s、追加 1 页 2s、并发 6/6），同样产生于修复前代码；本次交付未消耗外部调用额度，转换链路的正确性由 Fake 提供者 + 用例测试覆盖。
+1. 第四轮已重跑真实依赖 HTTP E2E：主链路 20/20、扩展链路 29/29、收口 8/8 全部通过（注册免码、多页转换、追加、取消/重试、批量导入、PDF 与目录 ZIP 导出、分享 JSON 与 HTML、增量同步、回收站恢复、版本恢复、续签守卫）。
+   端口与跨域默认值已收紧：API/MinIO 不显式配置时只监听 `127.0.0.1`，跨域不显式配置时不放行任何来源；本机联调通过在 `.env` 写 `GN_HTTP_BIND=0.0.0.0`、`MINIO_BIND=0.0.0.0`、`GN_CORS_ORIGINS=*` 放开，实测预检返回 `204` 且带 `Access-Control-Allow-Origin`。
+性能采样：默认限流下（读 6 rps、写 1 rps）读 p95 5.6ms、写 p95 15.1ms；**放开限流后的容量基线见 [PERF-REPORT.md](PERF-REPORT.md)**——读 500 rps p95 34.9ms、写 200 rps p95 139.8ms，均满足质量目标，0 错误。
+   限流配额现可通过 `GN_RATE_*` 覆盖（[config.go](internal/config/config.go)），生产默认值不变。
+2. 真实 DeepSeek 识图已在第四轮跑通（1 页纯色图返回 `SUCCEEDED` 且 `unreadablePages=[1]`）；容器所在网络无直连外网，运行态依赖宿主代理（`clash-relay.service` + `GN_HTTP_PROXY`），换成可直连外网的环境时应移除该配置。
 3. 真实邮件供应商仍未接入，邮件链路仅 `fake` 适配器（本次交付已补单测与脱敏）。
 4. MinIO 适配器无独立单测，由真实依赖 E2E 用例覆盖；对象存储 Fake 已改为注入时钟。
 5. `internal/config` 覆盖率 25.3%，主要为既有配置项缺少用例；本次交付新增的 `GN_FAKE_MAIL_REVEAL_CODE` 解析由启动路径间接覆盖。
@@ -138,4 +151,4 @@ go test -count=1 -v ./internal/infrastructure/postgres ./internal/infrastructure
 
 ## 6. 结论
 
-三轮审查意见已全部闭环：第一轮 P0/P1/Nit 修复落地，第二轮 2 项 Important、9 项 Nit 与 1 项 Pre-existing 已修复，第三轮 3 项 Nit（公开端点缓存指令、单实例回收约束说明、报告口径）已修复，`/s/{token}` 分享页与 `GOMEMLIMIT` 两项遗留问题也已收口。当前代码在 Windows 上静态检查、构建与 329 个测试函数全部通过；在真实 PostgreSQL 16.15 与 Redis 7.4.12 上，覆盖并发 CAS、目录串行、令牌轮换、任务串行、上传单次消费、幂等占位与队列可靠投递的 15 个集成用例全部通过。审查中指出的「真实适配器无测试」问题已闭环；E2E 与压测需按第 5 节在合并前重跑。
+四轮审查意见已全部闭环。第四轮按联调反馈处理了三类问题：B 配置（MinIO 对外、`GN_S3_ENDPOINT`/分享基址、生产关闭验证码跳过）、C 接口（上传会话续签、`unreadablePages`）、D 文档口径（分页字段、上传强制头、幂等标记、错误码统一）。当前代码静态检查、构建与 **352 个测试函数 / 87 个文件**全部通过；真实 PostgreSQL 16 与 Redis 7 上的集成用例（含新增的未识别页码往返）全部通过；真实服务 E2E **20/20 通过**，转换链路走真实 DeepSeek，图片直传与导出下载走真实 MinIO 预签名地址。性能压测按第 5 节在合并前单独执行。

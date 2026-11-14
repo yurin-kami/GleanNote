@@ -149,7 +149,8 @@ func (m *MinIO) Name() string { return "minio" }
 
 /*
  * PresignPut 生成短期上传地址。
- * MinIO 的预签名 PUT 不绑定 Content-Type，因此 Headers 为空；客户端可自行设置。
+ * MinIO 的预签名 PUT 不把 Content-Type 纳入签名，但契约要求客户端原样携带该头
+ * （见 docs/API.md#541-post-v1uploads），因此这里回填声明类型，避免客户端猜。
  */
 func (m *MinIO) PresignPut(ctx context.Context, key, contentType string, ttl time.Duration) (port.PutTarget, error) {
 	if err := ctx.Err(); err != nil {
@@ -168,7 +169,7 @@ func (m *MinIO) PresignPut(ctx context.Context, key, contentType string, ttl tim
 	}
 	return port.PutTarget{
 		URL:       target.String(),
-		Headers:   map[string]string{},
+		Headers:   map[string]string{"Content-Type": contentType},
 		ExpiresAt: time.Now().Add(expires),
 	}, nil
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: 拾页笔记（GleanNote）服务端 API
-  version: 1.0.1
+  version: 1.0.2
   summary: 纸质页面到可编辑 Markdown 笔记的服务端接口契约
   description: |
     本契约是 docs/API.md 的机器可读形态，二者必须同步修订。
@@ -718,6 +718,26 @@ paths:
         '409': { $ref: '#/components/responses/Problem' }
         '429': { $ref: '#/components/responses/Problem' }
 
+  /uploads/{uploadId}:presign:
+    parameters:
+      - name: uploadId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [upload]
+      summary: 为既有上传会话重新签发预签名地址（断点续传）
+      responses:
+        '200':
+          description: 重新签发的上传会话，到期时间与会话原始到期一致
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadSession' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
+
   /uploads/{uploadId}:complete:
     parameters:
       - name: uploadId
@@ -1284,7 +1304,7 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
-      required: false
+      required: true
       description: 创建类操作必带，8–64 位可见 ASCII，24 小时唯一
       schema: { type: string, minLength: 8, maxLength: 64 }
 
@@ -1549,6 +1569,10 @@ components:
           type: [string, 'null']
           enum: [PROVIDER_UNAVAILABLE, IMAGE_UNREADABLE, CONTENT_UNSUPPORTED, TIMEOUT, EMPTY_RESULT, QUOTA_EXCEEDED, STORAGE_EXCEEDED, NOTE_MODIFIED, INTERNAL_ERROR, null]
         failureUserMessage: { type: [string, 'null'] }
+        unreadablePages:
+          type: array
+          description: 本次转换中未识别到文字的页码（从 1 开始、去重升序），空数组表示全部成功
+          items: { type: integer, minimum: 1 }
         quotaCharged: { type: integer }
         createdAt: { type: string, format: date-time }
         startedAt: { type: string, format: date-time }

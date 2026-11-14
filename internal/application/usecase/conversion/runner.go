@@ -156,6 +156,8 @@ func (s *Service) RunJob(ctx context.Context, userID, jobID string) error {
 		if err := s.deps.Versions.Record(txCtx, job.UserID, note.ID, "CONVERSION", note.Content); err != nil {
 			return err
 		}
+		/* 优先取适配器的结构化页码，缺失时回退到正文占位；随成功终态一起落库 */
+		current.UnreadablePages = resolveUnreadablePages(result)
 		current.Advance(current.TotalPages, entity.JobPhaseGenerating, finishedAt)
 		current.Succeed(finishedAt)
 		applied, err = s.deps.Jobs.Update(txCtx, current, entity.JobStateRunning)

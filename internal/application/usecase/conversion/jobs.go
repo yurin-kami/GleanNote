@@ -223,6 +223,7 @@ func toJobView(job *entity.ConversionJob) JobView {
 		ProcessedPages:     job.ProcessedPages,
 		FailureCode:        string(job.FailureCode),
 		FailureUserMessage: job.FailureUserMessage,
+		UnreadablePages:    job.UnreadablePages,
 		QuotaCharged:       job.QuotaCharged,
 		CreatedAt:          job.CreatedAt,
 		StartedAt:          job.StartedAt,

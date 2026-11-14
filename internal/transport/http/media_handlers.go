@@ -51,7 +51,7 @@ type pageDTO struct {
 /* pageListDTO 是页面集合响应；nextPageToken 为空表示末页 */
 type pageListDTO struct {
 	Items         []pageDTO `json:"items"`
-	NextPageToken string    `json:"nextPageToken,omitempty"`
+	NextPageToken string    `json:"nextPageToken"`
 }
 
 /* pageOriginalDTO 对应 openapi 的 PageOriginal */
@@ -73,10 +73,12 @@ type conversionJobDTO struct {
 	ProcessedPages     int    `json:"processedPages"`
 	FailureCode        string `json:"failureCode,omitempty"`
 	FailureUserMessage string `json:"failureUserMessage,omitempty"`
-	QuotaCharged       int    `json:"quotaCharged"`
-	CreatedAt          string `json:"createdAt"`
-	StartedAt          string `json:"startedAt,omitempty"`
-	FinishedAt         string `json:"finishedAt,omitempty"`
+	/* UnreadablePages 非空表示部分页面未识别到文字，页码从 1 开始 */
+	UnreadablePages []int  `json:"unreadablePages"`
+	QuotaCharged    int    `json:"quotaCharged"`
+	CreatedAt       string `json:"createdAt"`
+	StartedAt       string `json:"startedAt,omitempty"`
+	FinishedAt      string `json:"finishedAt,omitempty"`
 }
 
 /* quotaSnapshotDTO 是提交响应中的额度快照 */
@@ -104,6 +106,7 @@ func toConversionJobDTO(view conversionusecase.JobView) conversionJobDTO {
 		ProcessedPages:     view.ProcessedPages,
 		FailureCode:        view.FailureCode,
 		FailureUserMessage: view.FailureUserMessage,
+		UnreadablePages:    normalizePages(view.UnreadablePages),
 		QuotaCharged:       view.QuotaCharged,
 		CreatedAt:          rfc3339(view.CreatedAt),
 	}
@@ -116,15 +119,24 @@ func toConversionJobDTO(view conversionusecase.JobView) conversionJobDTO {
 	return dto
 }
 
-/* toSubmittedJobDTO 映射创建笔记响应中的任务摘要 */
+/* toSubmittedJobDTO 映射创建笔记响应中的任务摘要；未识别页在提交时必然为空数组 */
 func toSubmittedJobDTO(view noteusecase.ConversionJobView) conversionJobDTO {
 	return conversionJobDTO{
-		ID:             view.ID,
-		State:          view.State,
-		Phase:          view.Phase,
-		TotalPages:     view.TotalPages,
-		ProcessedPages: view.ProcessedPages,
+		ID:              view.ID,
+		State:           view.State,
+		Phase:           view.Phase,
+		TotalPages:      view.TotalPages,
+		ProcessedPages:  view.ProcessedPages,
+		UnreadablePages: []int{},
 	}
+}
+
+/* normalizePages 把 nil 归一为空数组，保证 unreadablePages 恒为 JSON 数组而非 null */
+func normalizePages(pages []int) []int {
+	if pages == nil {
+		return []int{}
+	}
+	return pages
 }
 
 /* createUploadsRequest 对应 POST /v1/uploads */
@@ -174,6 +186,28 @@ func (h *handler) createUploads(c *gin.Context) {
 		})
 	}
 	respondJSON(c, http.StatusCreated, uploadSessionsDTO{Items: dtos})
+}
+
+/* represignUpload 为既有会话重新签发上传地址，用于客户端重启后续传 */
+func (h *handler) represignUpload(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		unauthorized(c)
+		return
+	}
+	/* 归属与会话状态由用例层校验；地址按剩余有效期重新签名，不延长窗口 */
+	ticket, err := h.uploads.PresignUpload(c.Request.Context(), userID, c.Param("uploadId"))
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	respondJSON(c, http.StatusOK, uploadSessionDTO{
+		UploadID:  ticket.UploadID,
+		ObjectKey: ticket.ObjectKey,
+		PutURL:    ticket.PutURL,
+		Headers:   ticket.Headers,
+		ExpiresAt: rfc3339(ticket.ExpiresAt),
+	})
 }
 
 /* completeUploadRequest 对应 POST /v1/uploads/{uploadId}:complete */

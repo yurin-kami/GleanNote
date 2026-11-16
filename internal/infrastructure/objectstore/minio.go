@@ -29,17 +29,24 @@ const (
 
 /* Options 是适配器连接参数，来源为环境变量，清单见 docs/ARCHITECTURE.md 附录 A */
 type Options struct {
-	Endpoint  string
-	AccessKey string
-	SecretKey string
-	Bucket    string
-	Region    string
-	UseSSL    bool
+	/* Endpoint 供服务端读写对象，通常是容器内网地址 */
+	Endpoint string
+	/* PublicEndpoint 只用于签发地址：客户端必须能直连，留空则与 Endpoint 相同 */
+	PublicEndpoint string
+	/* PublicUseSSL 由 normalized 从 PublicEndpoint 的协议推导，调用方无需设置 */
+	PublicUseSSL bool
+	AccessKey    string
+	SecretKey    string
+	Bucket       string
+	Region       string
+	UseSSL       bool
 }
 
 /* MinIO 是 port.ObjectStore 的 S3 兼容实现，桶保持私有 */
 type MinIO struct {
 	client *minio.Client
+	/* public 只负责签发地址；nil 表示单端点部署，复用 client */
+	public *minio.Client
 	bucket string
 }
 
@@ -52,18 +59,36 @@ func NewMinIO(ctx context.Context, opts Options) (*MinIO, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := minio.New(opts.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(opts.AccessKey, opts.SecretKey, ""),
-		Secure: opts.UseSSL,
-		Region: opts.Region,
-	})
+	newClient := func(endpoint string, secure bool) (*minio.Client, error) {
+		created, err := minio.New(endpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(opts.AccessKey, opts.SecretKey, ""),
+			Secure: secure,
+			Region: opts.Region,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("创建 MinIO 客户端(%s): %w", endpoint, err)
+		}
+		return created, nil
+	}
+
+	client, err := newClient(opts.Endpoint, opts.UseSSL)
 	if err != nil {
-		return nil, fmt.Errorf("创建 MinIO 客户端: %w", err)
+		return nil, err
 	}
 	if err := ensureBucket(ctx, client, opts); err != nil {
 		return nil, err
 	}
-	return &MinIO{client: client, bucket: opts.Bucket}, nil
+
+	/* 公网端点只签名不探测：它可能只对客户端可达，服务端连不上属正常 */
+	store := &MinIO{client: client, bucket: opts.Bucket}
+	if opts.PublicEndpoint != "" && opts.PublicEndpoint != opts.Endpoint {
+		publicClient, err := newClient(opts.PublicEndpoint, opts.PublicUseSSL)
+		if err != nil {
+			return nil, err
+		}
+		store.public = publicClient
+	}
+	return store, nil
 }
 
 /*
@@ -77,6 +102,14 @@ func (o Options) normalized() (Options, error) {
 	}
 	o.Endpoint = endpoint
 	o.UseSSL = secure
+	if strings.TrimSpace(o.PublicEndpoint) != "" {
+		publicEndpoint, publicSecure, err := parseEndpoint(o.PublicEndpoint, o.UseSSL)
+		if err != nil {
+			return Options{}, fmt.Errorf("解析公网端点: %w", err)
+		}
+		o.PublicEndpoint = publicEndpoint
+		o.PublicUseSSL = publicSecure
+	}
 	o.Bucket = strings.TrimSpace(o.Bucket)
 	o.Region = strings.TrimSpace(o.Region)
 	if o.Region == "" {
@@ -147,6 +180,14 @@ func ensureBucket(ctx context.Context, client *minio.Client, opts Options) error
 /* Name 返回提供者名称，用于启动日志与就绪探针展示 */
 func (m *MinIO) Name() string { return "minio" }
 
+/* signingClient 返回签发地址用的客户端；未配置公网端点时复用主客户端 */
+func (m *MinIO) signingClient() *minio.Client {
+	if m.public != nil {
+		return m.public
+	}
+	return m.client
+}
+
 /*
  * PresignPut 生成短期上传地址。
  * MinIO 的预签名 PUT 不把 Content-Type 纳入签名，但契约要求客户端原样携带该头
@@ -163,7 +204,7 @@ func (m *MinIO) PresignPut(ctx context.Context, key, contentType string, ttl tim
 		return port.PutTarget{}, fmt.Errorf("contentType 不能为空")
 	}
 	expires := effectiveTTL(ttl)
-	target, err := m.client.PresignedPutObject(ctx, m.bucket, key, expires)
+	target, err := m.signingClient().PresignedPutObject(ctx, m.bucket, key, expires)
 	if err != nil {
 		return port.PutTarget{}, fmt.Errorf("生成上传地址: %w", err)
 	}
@@ -183,7 +224,7 @@ func (m *MinIO) PresignGet(ctx context.Context, key string, ttl time.Duration) (
 		return "", time.Time{}, err
 	}
 	expires := effectiveTTL(ttl)
-	target, err := m.client.PresignedGetObject(ctx, m.bucket, key, expires, nil)
+	target, err := m.signingClient().PresignedGetObject(ctx, m.bucket, key, expires, nil)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("生成下载地址: %w", err)
 	}

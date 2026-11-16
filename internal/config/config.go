@@ -98,12 +98,14 @@ type AuthConfig struct {
  * 本地开发对应 MinIO 容器；生产可零改动切换到同语义的 S3 兼容存储。
  */
 type S3Config struct {
-	Endpoint  string
-	Bucket    string
-	AccessKey string
-	SecretKey string
-	Region    string
-	UseSSL    bool
+	Endpoint string
+	/* PublicEndpoint 只用于签发地址：客户端必须能访问，留空则与 Endpoint 相同 */
+	PublicEndpoint string
+	Bucket         string
+	AccessKey      string
+	SecretKey      string
+	Region         string
+	UseSSL         bool
 }
 
 /*
@@ -139,11 +141,12 @@ func Load() (Config, error) {
 			VisionFailure: getEnv("GN_FAKE_VISION_FAILURE", ""),
 		},
 		S3: S3Config{
-			Endpoint:  getEnv("GN_S3_ENDPOINT", "127.0.0.1:9000"),
-			Bucket:    getEnv("GN_S3_BUCKET", "gleannote-private"),
-			AccessKey: getEnv("GN_S3_ACCESS_KEY", ""),
-			SecretKey: getEnv("GN_S3_SECRET_KEY", ""),
-			Region:    getEnv("GN_S3_REGION", "us-east-1"),
+			Endpoint:       getEnv("GN_S3_ENDPOINT", "127.0.0.1:9000"),
+			PublicEndpoint: getEnv("GN_S3_PUBLIC_ENDPOINT", ""),
+			Bucket:         getEnv("GN_S3_BUCKET", "gleannote-private"),
+			AccessKey:      getEnv("GN_S3_ACCESS_KEY", ""),
+			SecretKey:      getEnv("GN_S3_SECRET_KEY", ""),
+			Region:         getEnv("GN_S3_REGION", "us-east-1"),
 		},
 		Vision: VisionConfig{
 			APIKey:  getEnv("GN_VISION_API_KEY", ""),

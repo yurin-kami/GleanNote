@@ -99,12 +99,13 @@ func New(cfg config.Config, out io.Writer, logger *slog.Logger) (*App, error) {
 	storeCtx, cancel := context.WithTimeout(context.Background(), bootTimeout)
 	defer cancel()
 	store, err := objectstore.New(storeCtx, cfg.Providers.ObjectStore, objectstore.Options{
-		Endpoint:  cfg.S3.Endpoint,
-		AccessKey: cfg.S3.AccessKey,
-		SecretKey: cfg.S3.SecretKey,
-		Bucket:    cfg.S3.Bucket,
-		Region:    cfg.S3.Region,
-		UseSSL:    cfg.S3.UseSSL,
+		Endpoint:       cfg.S3.Endpoint,
+		PublicEndpoint: cfg.S3.PublicEndpoint,
+		AccessKey:      cfg.S3.AccessKey,
+		SecretKey:      cfg.S3.SecretKey,
+		Bucket:         cfg.S3.Bucket,
+		Region:         cfg.S3.Region,
+		UseSSL:         cfg.S3.UseSSL,
 	}, clock.System{})
 	if err != nil {
 		return nil, fmt.Errorf("装配对象存储: %w", err)

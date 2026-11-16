@@ -810,7 +810,8 @@ sequenceDiagram
 | `GN_DATABASE_MAX_CONNS` | 否 | `8` | 连接池上限，必须为正整数 |
 | `GN_CACHE_PROVIDER` | 否 | `memory` | 限流/幂等/黑名单/队列实现：`memory`/`redis` |
 | `GN_REDIS_URL` | 是 | — | Redis 连接串（如 `redis://127.0.0.1:6379/0`）；选择 `redis` 时必填 |
-| `GN_S3_ENDPOINT` | 否 | `127.0.0.1:9000` | MinIO / S3 端点，可带 http(s) 协议；会原样写进预签名地址，必须是客户端可达地址 |
+| `GN_S3_ENDPOINT` | 否 | `127.0.0.1:9000` | MinIO / S3 端点，服务端读写用，可带 http(s) 协议 |
+| `GN_S3_PUBLIC_ENDPOINT` | 否 | 空（同 `GN_S3_ENDPOINT`） | 仅用于签发预签名地址，必须是客户端可达地址；内网读写 + 公网签名用它 |
 | `GN_CORS_ORIGINS` | 否 | 空 | 跨域来源白名单，逗号分隔；空表示不开启跨域，联调可写 `*` |
 | `GN_HTTP_BIND` / `MINIO_BIND` | 否 | `127.0.0.1` | 仅 compose 使用：宿主端口绑定地址；需要异机客户端时显式改 `0.0.0.0` |
 | `GN_HTTP_PROXY` / `GN_HOST_LAN_IP` | 否 | 空 | 仅 compose 使用：容器出站代理与 `NO_PROXY` 的宿主地址；生产直连时可省略 |
